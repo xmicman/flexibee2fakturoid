@@ -3,6 +3,19 @@
 > Stav: Draft v0.3 — backup-first přístup, ověřeno proti reálné záloze.
 > Nahrazuje artefakt v0.2, který předpokládal jiný formát zálohy (viz [Historie](#historie-verzí) níže).
 
+## Publikum a rozsah
+
+Tento nástroj je primárně pro osobní použití autora — migrace jeho vlastní firmy z FlexiBee do
+Fakturoidu. Kód je veřejný na GitHubu **jako inspirace pro ostatní**, ne jako udržovaný open-source
+projekt s očekáváním community podpory, issues od cizích uživatelů nebo záruky, že bude fungovat na
+jiné FlexiBee instalaci (jiné moduly, jiná verze schématu, jiné customizace).
+
+Praktický důsledek: **nestavíme robustnost proti neznámému schématu jiných firem.** Ověřujeme a
+optimalizujeme pro strukturu, kterou vidíme v reálné záloze autora (viz [Backup formát](#backup-formát-winstrom-backup---skutečný-formát)).
+Přesto zůstává v plné vážnosti vše, co se týká **bezpečnosti vlastních účetních dat** — dry-run,
+idempotence, e2e testy proti mocku, rollback (viz níže) — protože tady jde o data jednoho člověka bez
+komunity, která by chybu odhalila dřív než on sám na ostrém účtu.
+
 ## Goal
 
 Jednorázový migrační nástroj (CLI) pro přesun dat z FlexiBee do Fakturoidu. Bez API přístupu k FlexiBee,
@@ -253,6 +266,9 @@ f2f migrate firma.winstrom-backup … --only received-invoices
 
 # Přepsání base URL Fakturoid API — použito testy (mock server), jinak vždy produkční API
 f2f migrate firma.winstrom-backup … --fakturoid-base-url http://127.0.0.1:8000
+
+# Vrátit zpět přesně to, co vytvořil daný běh migrace (viz Rollback & Failure Recovery)
+f2f rollback <run-id> --fakturoid-slug … --fakturoid-token …
 ```
 
 Pokud `--fakturoid-token` chybí, CLI se zeptá interaktivně (`typer.prompt(hide_input=True)`).
@@ -325,8 +341,52 @@ vlastní mock server, ne mockování na úrovni Python funkcí:
 ### Co mock nenahrazuje
 
 Mock je zjednodušená implementace — nezachytí každou libovolnost reálného Fakturoid API (limity,
-edge cases validace, chování `inbox_invoices`). Před release (Fáze 5) proto zůstává **jeden ruční**
-ověřovací běh proti reálnému Fakturoid sandbox účtu — mimo automatizované testy, dělá ho člověk.
+edge cases validace, chování `inbox_invoices`). Před prvním ostrým (produkčním) během proto zůstává
+**jeden ruční** ověřovací běh proti reálnému Fakturoid sandbox účtu — mimo automatizované testy,
+dělá ho člověk.
+
+<a id="rollback--failure-recovery"></a>
+## Rollback & Failure Recovery
+
+Migrace zapisuje do ostrého účetnictví. "Smaž všechno ve Fakturoidu a spusť znovu" **není bezpečná
+univerzální odpověď** na chybu — bezpečnost závisí na tom, jestli uživatel mezitím ve Fakturoidu
+s daty už pracoval (nová faktura, označení jako zaplaceno, odeslaná upomínka). Slepý wipe by smazal
+i tuhle reálnou práci, ne jen to, co vytvořila migrace.
+
+Dedup logika (IČO / číslo faktury) navíc chrání jen proti **duplicitám** při opakovaném běhu — pokud
+je bug v tom, že se vytvořil *špatný* záznam (špatná DPH sazba, částka), opravený skript ho při
+dalším běhu přeskočí jako "už existuje", nezmění ho. Idempotence ≠ oprava.
+
+### Run log
+
+Každý reálný (`--yes`) běh migrace persistuje lokální run log (`~/.f2f/runs/<run-id>.json` nebo
+podobně, mimo git repo) se záznamem pro každý vytvořený objekt: FlexiBee zdrojové ID, Fakturoid ID,
+typ entity, časová značka, run ID. Bez tohohle nejde bezpečně smazat "jen to, co vytvořila migrace"
+jinak než ručně v UI záznam po záznamu — u stovek položek nepoužitelné a riskantní (smažeš i něco
+cizího).
+
+### `f2f rollback <run-id>`
+
+Vlastní CLI příkaz, ne ruční úklid v UI. Načte run log daného běhu a smaže přesně ty záznamy, které
+ten běh vytvořil, přes Fakturoid API (s rate limitingem jako import). Hlásí, co se smazat nepovedlo
+(další bezpečný retry, ne tichý fail). Dělá z "wipe a zkusit znovu" bezpečnou jednopříkazovou operaci
+— pokud je pořád co bezpečně smazat (viz tabulka níže).
+
+### Postup podle situace
+
+| Situace | Postup |
+|---|---|
+| Chyba nalezena při dry-run | Nic se nestalo, oprav a spusť znovu |
+| Chyba po `--yes` na **sandboxu** | `f2f rollback <run-id>`, oprav, spusť znovu — bez rizika |
+| Chyba po `--yes` na produkci, ve Fakturoidu mezitím nikdo nic nedělal | `f2f rollback <run-id>`, oprav, spusť znovu |
+| Chyba po `--yes` na produkci, uživatel už s daty pracoval | Rollback celého běhu je mimo hru. Přes run log dohledat konkrétní postižené záznamy a opravit cíleně (update existujícího záznamu ve Fakturoidu), ne smazat/znovu vytvořit |
+
+### Praktické pravidlo
+
+Produkční `--yes` běh je **jednorázová událost**, ne iterační smyčka. Veškeré ladění mapperu se
+odehrává na sandboxu a přes dry-run report, dokud čísla nesedí na 100 %. Produkční běh proběhne
+jednou, s rollbackem jako safety netem pro případ, že se přesto něco najde hned potom — dokud ve
+Fakturoidu ještě nikdo nezačal reálně pracovat.
 
 ## Phases
 
@@ -336,7 +396,7 @@ ověřovací běh proti reálnému Fakturoid sandbox účtu — mimo automatizov
 | 2 | Kontakty → Fakturoid | Pydantic modely, mapper, httpx klient, import s deduplikací přes IČO. Dry-run výstup v tabulce. |
 | 3 | Vydané faktury | Parser `ddoklfak`/`dpolfak` (modul=FAV), mapper, lookup kontaktů, import. Zachování číslování, validace součtů. |
 | 4 | Přijaté faktury | Totéž pro modul=FAP, import přes `inbox_invoices` (ověřit endpoint). |
-| 5 | Polish + open-source release | Edge cases (zahraniční faktury, různé DPH sazby, kontakty bez IČO, storno doklady, zálohové faktury), unit testy, README, GitHub release. |
+| 5 | Polish + wrap-up | Edge cases (zahraniční faktury, různé DPH sazby, kontakty bez IČO, storno doklady, zálohové faktury), unit testy, README. Kód zůstává veřejný na GitHubu jako inspirace, ne jako udržovaný OSS projekt — bez ambice podporovat cizí FlexiBee instalace (viz [Publikum a rozsah](#publikum-a-rozsah)). |
 
 ## Open Questions
 

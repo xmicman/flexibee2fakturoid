@@ -3,11 +3,19 @@
 Kontext a plné technické rozhodnutí viz [docs/spec.md](docs/spec.md). Tento soubor obsahuje jen
 pravidla chování při práci na repu.
 
-## Nejdůležitější fakt o projektu
+## Nejdůležitější fakta o projektu
 
 `.winstrom-backup` je **PostgreSQL custom-format dump** (`pg_dump -Fc`), ne ZIP/XML. Čte se přes
 `pgdumplib`, čistě v Pythonu, bez nutnosti mít nainstalovaný PostgreSQL. Pokud narazíš na
 dokumentaci nebo předpoklad, že jde o XML — je zastaralý, řiď se `docs/spec.md`.
+
+Toto je **primárně osobní nástroj autora**, ne udržovaný open-source projekt. Kód je veřejný jako
+inspirace pro ostatní, ale nestavíme robustnost proti neznámému schématu cizích FlexiBee instalací —
+optimalizujeme pro strukturu ověřenou na reálné záloze autora (viz `docs/spec.md`). Nepřidávej
+scaffolding pro cizí přispěvatele (issue templates, contribution guide, podpora více verzí schématu),
+pokud o to autor výslovně nepožádá. Bezpečnostní rigor okolo účetních dat (dry-run, idempotence,
+e2e testy, rollback) naopak neslevuj — je to o to důležitější, že tu není komunita, která by chybu
+zachytila dřív než sám autor na svém ostrém účtu.
 
 ## Pravidla
 
@@ -31,6 +39,12 @@ dokumentaci nebo předpoklad, že jde o XML — je zastaralý, řiď se `docs/sp
   verifikaci před releasem, ne pro automatizované testy v CI.
 - **Token se nikdy neukládá na disk.** Ani do logů, ani do cache souborů. Jen env proměnná
   `FAKTUROID_TOKEN` nebo interaktivní prompt s `hide_input=True`.
+- **Každý reálný (`--yes`) běh persistuje run log.** Idempotence (dedup) chrání proti duplicitám,
+  ne proti špatně namapovaným datům — pokud se najde bug až po produkčním běhu, run log je jediný
+  způsob, jak bezpečně smazat přesně to, co migrace vytvořila, přes `f2f rollback <run-id>`, aniž by
+  se sáhlo na cokoliv, co uživatel ve Fakturoidu vytvořil sám. Viz
+  [docs/spec.md#rollback--failure-recovery](docs/spec.md#rollback--failure-recovery). Produkční běh
+  je jednorázová událost, ne iterační smyčka — veškeré ladění mapperu patří na sandbox.
 - **Neber si závislosti navíc bez důvodu.** Tech stack je záměrně minimální (httpx, pydantic,
   typer, rich, pgdumplib) — držet se ho, nepřidávat XML parsery, ORM, browser automation apod.
 - **Poetry, ne pip/uv přímo.** Závislosti přidávej přes `poetry add`, ne ruční editací

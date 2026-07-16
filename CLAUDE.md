@@ -20,9 +20,15 @@ dokumentaci nebo předpoklad, že jde o XML — je zastaralý, řiď se `docs/sp
   žádnou cestu, kde by se import spustil bez explicitního potvrzení.
 - **Idempotence.** Import musí být bezpečné spustit opakovaně — dedup přes IČO (kontakty) a číslo
   faktury (faktury). Nikdy nevytvářej duplicitní záznam ve Fakturoidu.
-- **Testy běží bez zálohy a bez sítě.** Unit testy parseru/mapperu používají fixtures v
-  `tests/fixtures/` (vzorové řádky/tuples), ne reálný `.winstrom-backup` a ne živé volání
-  Fakturoid API. Síťové/integrační testy (pokud vzniknou) jasně odděl a označ.
+- **Unit testy běží bez zálohy a bez sítě.** Parser/mapper testy používají fixtures v
+  `tests/fixtures/` (vzorové řádky/tuples), ne reálný `.winstrom-backup`.
+- **End-to-end testy nikdy neběží proti reálnému Fakturoid účtu ani sandboxu.** Celý `migrate` flow
+  (CLI → httpx → HTTP → dedup/idempotence → report) se testuje proti lokálnímu mock serveru v
+  `tests/mock_fakturoid/` (viz [docs/spec.md#testing-strategy](docs/spec.md#testing-strategy)).
+  Tohle je nedílná součást implementace, ne volitelný nice-to-have — projekt zapisuje do účetnictví
+  uživatele, takže "otestováno jen na papíře / jen unit testy mapperu" nestačí k tomu, aby se import
+  považoval za hotový. Reálný Fakturoid sandbox account zůstává jen pro ruční, jednorázovou
+  verifikaci před releasem, ne pro automatizované testy v CI.
 - **Token se nikdy neukládá na disk.** Ani do logů, ani do cache souborů. Jen env proměnná
   `FAKTUROID_TOKEN` nebo interaktivní prompt s `hide_input=True`.
 - **Neber si závislosti navíc bez důvodu.** Tech stack je záměrně minimální (httpx, pydantic,

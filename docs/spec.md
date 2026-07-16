@@ -145,7 +145,10 @@ flexibee2fakturoid/
 │       └── runner.py          # orchestrace, dry-run, report
 └── tests/
     ├── fixtures/               # vzorové řádky/tabulky pro unit testy (bez reálné zálohy)
-    └── test_mapper.py
+    ├── mock_fakturoid/         # stavový Flask mock Fakturoid API pro e2e testy
+    │   └── app.py
+    ├── test_mapper.py
+    └── test_e2e_migrate.py    # end-to-end testy CLI proti mock_fakturoid
 ```
 
 Backup soubor je v `.gitignore` — spravuje ho uživatel sám, nikdy se necommituje.
@@ -247,10 +250,17 @@ f2f inspect firma.winstrom-backup
 f2f migrate firma.winstrom-backup … --only contacts
 f2f migrate firma.winstrom-backup … --only issued-invoices
 f2f migrate firma.winstrom-backup … --only received-invoices
+
+# Přepsání base URL Fakturoid API — použito testy (mock server), jinak vždy produkční API
+f2f migrate firma.winstrom-backup … --fakturoid-base-url http://127.0.0.1:8000
 ```
 
 Pokud `--fakturoid-token` chybí, CLI se zeptá interaktivně (`typer.prompt(hide_input=True)`).
 Token se nikdy neukládá na disk. Alternativně přes env proměnnou `FAKTUROID_TOKEN`.
+
+`--fakturoid-base-url` existuje výhradně proto, aby šel `fakturoid/client.py` nasměrovat na lokální
+mock server v testech (viz [Testing Strategy](#testing-strategy)) — v produkčním použití se nikdy
+nenastavuje.
 
 ## Dev Guidelines
 
@@ -261,7 +271,62 @@ Viz [CLAUDE.md](../CLAUDE.md) pro plné instrukce pro AI agenty. Shrnutí:
 - **`--dry-run` je výchozí chování** — reálný import vyžaduje `--yes`.
 - **Unit testy na mapování** — v `tests/fixtures/` jsou vzorové řádky (tuples/dicts), testy parseru
   a mapperu běží bez sítě a bez souboru zálohy.
-- **Fakturoid sandbox** — použij testovací účet pro iteraci nad importem bez rizika ostrých dat.
+- **End-to-end testy proti mock Fakturoid API** — celý `migrate` flow se testuje proti lokálnímu
+  mock serveru, nikdy proti reálnému účtu ani sandboxu v CI. Viz [Testing Strategy](#testing-strategy).
+- **Fakturoid sandbox** — reálný testovací účet Fakturoidu slouží jen k ruční, jednorázové verifikaci
+  před releasem (ověření skutečného API chování, ne automatizované CI testy).
+
+<a id="testing-strategy"></a>
+## Testing Strategy
+
+Projekt pracuje s reálnými účetními daty a zapisuje do ostrého účetního systému uživatele (Fakturoid).
+Proto testování má dvě oddělené úrovně a ani jedna se nesmí spoléhat na reálný Fakturoid účet:
+
+### 1. Unit testy (parser, mapper)
+
+- `tests/fixtures/` — syntetické řádky/tuples reprezentující výstup `pgdumplib` pro `aadresar`,
+  `ddoklfak`, `dpolfak`, `dtypdokl`, `astaty`. Žádný reálný `.winstrom-backup` v repu.
+- Testují čistou logiku: parsing sloupců, mapper FlexiBee → Fakturoid pole, edge cases (chybějící
+  IČO, cizí měna, storno příznak).
+- Běží bez sítě, bez souboru zálohy, v milisekundách.
+
+### 2. End-to-end testy proti mock Fakturoid API
+
+Nestačí unit test mapperu — potřebujeme ověřit **celý** tok `migrate` (CLI → httpx klient → HTTP →
+zpracování odpovědi → idempotence/dedup → report), aniž by šlo o reálný Fakturoid účet. K tomu slouží
+vlastní mock server, ne mockování na úrovni Python funkcí:
+
+- `tests/mock_fakturoid/` — malý, stavový HTTP server (Flask, dev-only závislost; běžící lokálně na
+  `127.0.0.1`, náhodný volný port), který implementuje relevantní subset Fakturoid REST API v3 podle
+  [oficiální dokumentace](https://www.fakturoid.cz/api/v3):
+  - `POST /accounts/{slug}/subjects.json` + `GET .../subjects.json?registration_no=…` (dedup lookup)
+  - `POST /accounts/{slug}/invoices.json` + `GET .../invoices.json?number=…`
+  - `POST /accounts/{slug}/inbox_invoices.json` (endpoint potvrdit dle Q2)
+  - Autentizace: kontrola Bearer tokenu, `401` při chybě
+  - Validace povinných polí — `422` s tělem podobným reálné Fakturoid chybové odpovědi
+  - Simulace `429 Too Many Requests` (např. každý N-tý request), aby se ověřila retry logika klienta
+  - Stav (vytvořené subjekty/faktury) drženy v paměti po dobu běhu test session — umožňuje ověřit
+    idempotenci (druhé spuštění migrace nic nevytvoří duplicitně)
+- Pytest fixture spustí server na pozadí (vlákno nebo `multiprocessing`) před testem a ukončí po něm.
+- CLI se v těchto testech spouští s `--fakturoid-base-url` směřujícím na mock, přes `CliRunner`
+  (typer) nebo subprocess — reálný network stack (httpx, retry, serializace JSON) se skutečně
+  provolá, jen proti localhost místo `app.fakturoid.cz`.
+- Tyto testy běží v CI na každý PR, bez nutnosti jakýchkoli reálných credentials.
+
+### Co e2e testy proti mocku ověřují
+
+- Kontakt s duplicitním IČO se podruhé nevytvoří (idempotence)
+- Faktura zachovává číslo z FlexiBee (`number` v requestu odpovídá `kod`)
+- `--dry-run` (výchozí) nikdy neprovede žádný `POST` na mock server
+- Retry po `429` proběhne a request nakonec uspěje
+- Neplatný/chybějící token vede k čitelné chybové hlášce, ne pádu s tracebackem
+- Report na konci migrace odpovídá počtu skutečně vytvořených/přeskočených záznamů na mock serveru
+
+### Co mock nenahrazuje
+
+Mock je zjednodušená implementace — nezachytí každou libovolnost reálného Fakturoid API (limity,
+edge cases validace, chování `inbox_invoices`). Před release (Fáze 5) proto zůstává **jeden ruční**
+ověřovací běh proti reálnému Fakturoid sandbox účtu — mimo automatizované testy, dělá ho člověk.
 
 ## Phases
 

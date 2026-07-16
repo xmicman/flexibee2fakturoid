@@ -18,6 +18,7 @@ pgdumplib = "^4.0"
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
 ruff = "^0.5"
+flask = "^3.0"           # stavový mock Fakturoid API server pro e2e testy, viz docs/spec.md#testing-strategy
 
 [tool.poetry.scripts]
 f2f = "f2f.cli:app"

@@ -97,7 +97,7 @@ nástroj napsaný — ověřuje realitu dřív, než se staví parser na předpo
 
 | Tabulka | Obsah | Poznámka |
 |---|---|---|
-| `aadresar` | Kontakty (dodavatelé i odběratelé v jedné tabulce) | 615 řádků v testovací záloze |
+| `aadresar` | Kontakty (dodavatelé i odběratelé v jedné tabulce) | 615 řádků v testovací záloze, ale jen **74 skutečných obchodních kontaktů** (`typvztahuk` = odběratel/dodavatel/oboje) — zbytek (541) jsou vestavěné referenční číselníky FlexiBee (finanční úřady, OSSZ pobočky, zdravotní pojišťovny), viz Field Mapping a Q7 |
 | `ddoklfak` | Hlavičky **všech** typů dokladů (faktury, banka, pokladna, sklad, objednávky…) | Filtrovat sloupcem `modul` |
 | `dpolfak` | Položky faktur | FK `iddoklfak` → `ddoklfak.iddoklfak` |
 | `dtypdokl` | Číselník typů dokladů (FAKTURA, ZÁLOHA, ZDD, dobropis…) | FK `ddoklfak.idtypdokl` |
@@ -240,11 +240,12 @@ Tarif **Zdarma / Na lehko**: **1500 API požadavků / kalendářní měsíc.** L
 při jednorázovém překročení (do 15 000 požadavků) nic neúčtuje ani neomezuje, opakované překračování
 doporučí vyšší tarif. (Zdroj: nastavení účtu autora, ověřeno 2026-07-19.)
 
-Reálná záloha obsahuje ~615 kontaktů + 323 vydaných + 726 přijatých faktur = **~1664 záznamů k
-vytvoření.** I s dedup přes lokální index (pár desítek `GET` na stažení seznamů, ne stovky) se
-samotné `POST` požadavky na vytvoření pohybují těsně kolem měsíčního limitu volného tarifu. Číselné
-položky faktur (`dpolfak`) jdou většinou v těle `POST` na fakturu, ne jako samostatný request —
-ověřit v Fakturoid API docs, jestli náhodou nejde o zvláštní endpoint per položka (to by rozpočet
+Reálná záloha obsahuje ~74 skutečných kontaktů (viz Field Mapping — 541 z 615 řádků `aadresar` jsou
+vestavěné referenční číselníky, vynechané z migrace) + 323 vydaných + 726 přijatých faktur =
+**~1123 záznamů k vytvoření.** I s dedup přes lokální index (pár desítek `GET` na stažení seznamů, ne
+stovky) se samotné `POST` požadavky na vytvoření pohybují blízko měsíčního limitu volného tarifu.
+Číselné položky faktur (`dpolfak`) jdou většinou v těle `POST` na fakturu, ne jako samostatný request
+— ověřit v Fakturoid API docs, jestli náhodou nejde o zvláštní endpoint per položka (to by rozpočet
 výrazně prodražilo).
 
 Praktické důsledky:
@@ -296,7 +297,8 @@ postupně později. Reálná čísla ze zálohy (2026-07-19):
 | **2026 (první běh)** | 6 | 39 | **45** |
 | 2011–2025 (backfill) | 317 | 687 | 1004 |
 
-Letošní dávka odkazuje jen na **9 unikátních kontaktů** (z 615 celkem).
+Letošní dávka odkazuje jen na **9 unikátních kontaktů** (z 74 skutečných obchodních kontaktů — viz
+Field Mapping a Q7 k vestavěným číselníkům FlexiBee, které se z migrace vynechávají).
 
 ### Proč
 
@@ -312,9 +314,11 @@ Letošní dávka odkazuje jen na **9 unikátních kontaktů** (z 615 celkem).
 
 ### Rozsah filtru
 
-**Kontakty se importují vždy celé** (615 záznamů, nezávisle na období faktur) — nízkoriziková
-adresářová data, chceš mít kompletní seznam pro fakturaci komukoliv od začátku. Jen **faktury**
-(vydané i přijaté) se filtrují podle `datvyst` přes `--since`/`--until` (viz CLI Interface níže).
+**Kontakty se importují vždy celé** (74 skutečných obchodních kontaktů, nezávisle na období faktur —
+vestavěné číselníky finančních úřadů/OSSZ/zdravotních pojišťoven se vynechávají by default, viz Q7) —
+nízkoriziková adresářová data, chceš mít kompletní seznam pro fakturaci komukoliv od začátku. Jen
+**faktury** (vydané i přijaté) se filtrují podle `datvyst` přes `--since`/`--until` (viz CLI Interface
+níže).
 
 ### Doporučený postup backfillu
 
@@ -495,7 +499,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 | Q4 | Přijaté faktury — kompletní data v záloze (dodavatel, položky, částky)? | Inspect reálné zálohy | ✅ **Vyřešeno** — 726 řádků FAP v `ddoklfak`, položky v `dpolfak` propojené přes `iddoklfak` |
 | Q5 | PDF přílohy k fakturám — zachovat nebo ignorovat? | Tabulky `wpriloha`/`wprilohadata` existují v záloze — obsahují binární data příloh | Otevřeno, mimo scope v0.1 migrace |
 | Q6 | Zálohové faktury (`idtypdokl` = ZÁLOHA/ZDD) a dobropisy — migrovat jako běžné faktury, jinak, nebo vynechat? | Konzultace s uživatelem, ověření Fakturoid podpory dobropisů | Nové |
-| Q7 | Institucionální kontakty (zdravotka, socialka, finanční úřad) v `aadresar` — migrovat jako běžné subjekty? | Konzultace s uživatelem | Nové |
+| Q7 | Institucionální kontakty (zdravotka, socialka, finanční úřad) v `aadresar` — migrovat jako běžné subjekty? | `f2f migrate --fakturoid-slug … --fakturoid-token …` (dry-run) na reálné záloze | 🟢 **Rozhodnuto (implementace)** — vynechány by default. Skutečná distribuce: 442× `financniUrad`, 89× `socialka`, 10× `zdravotka` (541 z 615 řádků — vestavěné číselníky FlexiBee, ne obchodní vztahy vytvořené uživatelem). Přepínatelné přes `--include-institutional-contacts`, pokud se ukáže, že je uživatel přece jen chce. |
 | Q8 | Storno doklady (`storno = true`) — vynechat z migrace? | Konzultace s uživatelem | Nové |
 | Q9 | Kódování `astaty.kod` — čisté ISO 3166-1 alpha-2, nebo FlexiBee specifický formát (pozorováno `XI` pro Severní Irsko)? | Projít číselník `astaty` v `f2f inspect` | Nové |
 
@@ -513,4 +517,6 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
   a detail k `number_formats.json` pro Q3 (číselné řady).
 - **v0.5** (tento dokument) — rozhodnuto o postupném cutoveru: první produkční běh omezen na faktury
   aktuálního roku (`--since`/`--until` filtr na `datvyst`), historie (1004 z 1049 faktur) se
-  doimportuje postupně později. Kontakty zůstávají plný import (615, nezávisle na období faktur).
+  doimportuje postupně později. Kontakty zůstávají plný import (74 skutečných obchodních kontaktů,
+  nezávisle na období faktur — z 615 řádků v `aadresar` jich 541 jsou vestavěné číselníky FlexiBee,
+  vynechané by default, viz Q7).

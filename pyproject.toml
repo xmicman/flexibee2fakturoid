@@ -12,16 +12,21 @@ python = "^3.11"
 httpx = "^0.27"
 pydantic = "^2.7"
 typer = "^0.12"
+click = "<8.2"            # typer 0.12.x is incompatible with click>=8.2's TyperArgument.make_metavar signature
 rich = "^13.7"
 pgdumplib = "^4.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
+pytest-asyncio = "^0.24"
 ruff = "^0.5"
 flask = "^3.0"           # stavový mock Fakturoid API server pro e2e testy, viz docs/spec.md#testing-strategy
 
 [tool.poetry.scripts]
 f2f = "f2f.cli:app"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["poetry-core"]

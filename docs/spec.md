@@ -1,9 +1,9 @@
 # flexibee2fakturoid — Technická specifikace
 
-> Stav: v0.9 — Fáze 1–4 a rollback implementované, end-to-end otestované proti mock Fakturoid serveru,
-> proti reálné záloze, a **živě proti reálnému Fakturoid trial účtu autora včetně skutečného zápisu**
-> (74 kontaktů + 6 vydaných faktur za 2026, se zachovaným historickým číslováním). Q1–Q3, Q7, Q10
-> uzavřeny živým ověřením. Zbývá dotáhnout přijaté faktury (`--yes`) a historický backfill.
+> Stav: v0.10 — **Cutover na aktuální rok kompletně dokončen a ověřen na živém Fakturoid účtu
+> autora:** 74 kontaktů, 6 vydaných faktur (historické číslování zachováno), 39 přijatých faktur
+> (auto-číslo + originál v `custom_id`). Q1–Q3, Q7, Q10 uzavřeny živým ověřením. Zbývá jen historický
+> backfill zbytku (~1000 faktur, viz issue #8).
 > Nahrazuje artefakt v0.2, který předpokládal jiný formát zálohy (viz [Historie](#historie-verzí) níže).
 
 ## Publikum a rozsah
@@ -203,7 +203,7 @@ Backup soubor je v `.gitignore` — spravuje ho uživatel sám, nikdy se necommi
 
 | FlexiBee sloupec | Fakturoid JSON (`invoices`, FAV) | Fakturoid JSON (`expenses`, FAP) | Poznámka |
 |---|---|---|---|
-| `kod` | `number` | `number` | Zachovat původní číslo (např. `VF1-0009/2024`). U `invoices` musí odpovídat nastavenému `number_format`, jinak API vrací `422` — u `expenses` dokumentace toto omezení nezmiňuje. Viz Q3. |
+| `kod` | `number` (přes `_normalize_invoice_number`, `/`→`-`) + `number_format_id` | `custom_id` (raw, bez normalizace) | **Živě ověřeno (2026-07-19), liší se od dřívějšího předpokladu.** `invoices` mají konfigurovatelnou číselnou řadu (musí se explicitně vybrat přes `number_format_id`, jinak se validuje proti výchozí) — historické číslo jde zachovat. `expenses` **nemají** konfigurovatelnou řadu vůbec (žádná volba v UI, žádné `number_format_id` v API) — `number` se nechává auto-generovat Fakturoidem, originál z FlexiBee jde do `custom_id`. Viz Q3. |
 | `datvyst` | `issued_on` | `issued_on` a `received_on` (FlexiBee nemá samostatné datum přijetí, použito totéž) | |
 | `datsplat` | `due` — **počet dní** od `issued_on`, ne datum (mapper počítá `(datsplat - datvyst).days`) | `due_on` — přímo datum | Asymetrie mezi endpointy, viz výše |
 | `duzppuv` | `taxable_fulfillment_due` | — (pole u expenses nepotvrzeno) | DUZP |
@@ -481,11 +481,17 @@ dalším běhu přeskočí jako "už existuje", nezmění ho. Idempotence ≠ op
 
 ### Run log
 
-Každý reálný (`--yes`) běh migrace persistuje lokální run log (`~/.f2f/runs/<run-id>.json` nebo
-podobně, mimo git repo) se záznamem pro každý vytvořený objekt: FlexiBee zdrojové ID, Fakturoid ID,
-typ entity, časová značka, run ID. Bez tohohle nejde bezpečně smazat "jen to, co vytvořila migrace"
-jinak než ručně v UI záznam po záznamu — u stovek položek nepoužitelné a riskantní (smažeš i něco
-cizího).
+Každý reálný (`--yes`) běh migrace persistuje lokální run log (`~/.f2f/runs/<run-id>.json`, mimo git
+repo) se záznamem pro každý vytvořený objekt: FlexiBee zdrojové ID, Fakturoid ID, typ entity, časová
+značka, run ID. Bez tohohle nejde bezpečně smazat "jen to, co vytvořila migrace" jinak než ručně v UI
+záznam po záznamu — u stovek položek nepoužitelné a riskantní (smažeš i něco cizího).
+
+**Ukládá se po každém záznamu, ne až na konci běhu.** Zjištěno naostro (2026-07-19): dřívější
+implementace ukládala run log jen jednou po dokončení celé dávky. Když běh spadl v půlce (reálný
+`422` na jedné z 39 přijatých faktur), první 2 úspěšně vytvořené záznamy zůstaly zcela netrasované —
+existovaly na účtu, ale `f2f rollback` by o nich nevěděl. `apply_contact_plan`/`apply_invoice_plan`
+teď volají `run_log.save()` po každém jednotlivém vytvoření (lokální zápis na disk, žádný API
+request navíc) — pád v půlce dávky už neztratí přehled o tom, co se stihlo.
 
 ### `f2f rollback <run-id>`
 
@@ -527,7 +533,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 |---|---|---|---|
 | Q1 | Přesná struktura zálohy — formát, tabulky, sloupce | `f2f inspect` | ✅ **Vyřešeno** — je to `pg_dump -Fc`, ne ZIP+XML. Klíčové tabulky zdokumentovány výše. |
 | Q2 | Fakturoid endpoint pro přijaté faktury — `inbox_invoices` nebo jiný? | Ověřeno proti dokumentaci i živě proti trial účtu autora (2026-07-19) | 🟢 **Vyřešeno.** Endpoint je `expenses`. `GET /accounts/{slug}/expenses.json` živě funguje (dry-run `--only received-invoices` proběhl bez chyby, 39 faktur za 2026 správně rozpoznáno). `POST` (vytvoření) zatím neověřen živě — dry-run nikdy nezapisuje, viz Q3. |
-| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | Skutečný `POST /invoices.json` proti živému účtu autora, kompletně vyřešeno (2026-07-19) | 🟢 **Vyřešeno a funguje end-to-end.** Tři dílčí problémy, všechny opravené: **(1)** `/` v čísle není povolený znak (jen číslice, A-Z, pomlčka) — `_normalize_invoice_number()` nahrazuje `/` → `-`. **(2)** Účet může mít víc číselných řad; bez explicitního `number_format_id` se `number` validuje proti výchozí řadě, ne proti té zamýšlené — přidán `--number-format-id` (ID se zjišťuje ručně přes devtools na formuláři nové faktury ve Fakturoid UI, `GET` na number-formats/generator endpointy živě vrací `404`, i když jsou zdokumentované). **(3)** Faktury je potřeba vytvářet v chronologickém pořadí (`plan_invoices_migration` řadí podle `datvyst`). Po opravě všech tří: `f2f migrate --only issued-invoices --since 2026-01-01 --number-format-id 1544448 --yes` úspěšně vytvořilo všech 6 faktur (`VF1-0001-2026` … `VF1-0006-2026`) se správným odběratelem a částkou, ověřeno zpětně přes `GET /invoices.json`. |
+| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | Skutečný zápis proti živému účtu autora, kompletně vyřešeno pro obě strany (2026-07-19) | 🟢 **Vyřešeno a funguje end-to-end, pro vydané i přijaté.** **Vydané (`invoices`):** tři dílčí problémy — `/` nepovolený znak (`_normalize_invoice_number`, `/`→`-`), nutnost explicitního `--number-format-id` (účet může mít víc číselných řad, bez toho se validuje proti výchozí), chronologické pořadí vytváření. Výsledek: `--only issued-invoices --since 2026-01-01 --number-format-id 1544448 --yes` vytvořilo všech 6 faktur (`VF1-0001-2026` … `VF1-0006-2026`) se zachovaným číslováním. **Přijaté (`expenses`):** číselná řada tu není konfigurovatelná vůbec (žádná volba v UI "Náklady", žádné `number_format_id` v API) — řešení je nechat Fakturoid přidělit vlastní `number` a originál z FlexiBee uložit do `custom_id`, dedup pak běží přes `custom_id` místo `number`. Cestou navíc opraveny dvě datové anomálie: řádky s `quantity=0` (Fakturoid je odmítá, `map_invoice_lines` je filtruje) a `due_on`/`due` dřívější než datum vystavení (u zálohových dokladů — mapper to teď vynechá místo poslání neplatné hodnoty). Výsledek: `--only received-invoices --since 2026-01-01 --yes` vytvořilo všech 39 faktur, ověřeno zpětně (39 unikátních `custom_id`, žádná duplicita). |
 | Q4 | Přijaté faktury — kompletní data v záloze (dodavatel, položky, částky)? | Inspect reálné zálohy | ✅ **Vyřešeno** — 726 řádků FAP v `ddoklfak`, položky v `dpolfak` propojené přes `iddoklfak` |
 | Q5 | PDF přílohy k fakturám — zachovat nebo ignorovat? | Tabulky `wpriloha`/`wprilohadata` existují v záloze — obsahují binární data příloh | 🟢 **Rozhodnuto** — ano, zachovat, ale ex-post po dokončení core migrace (#9), ne mission-critical a ne blokující |
 | Q6 | Zálohové faktury (`idtypdokl` = ZÁLOHA/ZDD) a dobropisy — migrovat jako běžné faktury, jinak, nebo vynechat? | Konzultace s uživatelem, ověření Fakturoid podpory dobropisů | Nové |
@@ -557,6 +563,18 @@ matoucí/nedokumentované chování jejich API a UI:
    "Přehled" navázaný na nedávnou fakturační aktivitu, ne na existenci kontaktu, ale to by mělo být
    z UI patrné (nebo by prázdný stav neměl tvrdit "toho moc neděje", když 74 kontaktů reálně
    existuje).
+3. **`GET` na číselné řady vrací `404`, přestože jsou zdokumentované.** Vyzkoušeno
+   `number_formats.json`, `number-formats.json`, `generator.json` i obecný `accounts/{slug}.json` —
+   všechny `404` živě. ID číselné řady jde zjistit jen ručně přes devtools na formuláři nové faktury
+   ve Fakturoid UI (`<select name="invoice[number_format_id]">`). Bez API přístupu k této informaci
+   je automatizace (jako tenhle nástroj) nucená se spoléhat na ruční jednorázový krok uživatele.
+4. **Dokumentace `expenses` endpointu nezmiňuje, že `number` podléhá validaci formátu.** Chování je
+   ve skutečnosti striktnější než u `invoices` — `expenses` nemají žádnou konfigurovatelnou číselnou
+   řadu (na rozdíl od `invoices`), takže libovolné vlastní `number` skončí `422` bez možnosti to
+   opravit jinak než rezignací na vlastní číslo a použitím `custom_id` místo toho. Stálo by za to v
+   dokumentaci `expenses` endpointu explicitně uvést, že `number` je prakticky jen pro čtení
+   (auto-generuje se), ne volitelně nastavitelné pole, jak popis "Expense number. Default: Calculate
+   new number automatically" naznačuje.
 
 ## Historie verzí
 
@@ -599,7 +617,7 @@ matoucí/nedokumentované chování jejich API a UI:
   dry-run (74 k vytvoření, 541 institucionálních přeskočeno — sedí s dřívějším odhadem) i dry-run
   obou typů faktur proti živému API. Q2 uzavřeno živě, Q3 čeká už jen na skutečný `POST` s
   historickým číslem (vyžaduje `--yes`, dry-run to z principu netestuje).
-- **v0.9** (tento dokument) — **první skutečný produkční zápis do reálného Fakturoid účtu**, s
+- **v0.9** — **první skutečný produkční zápis do reálného Fakturoid účtu**, s
   explicitním potvrzením uživatele. `--only contacts --yes` úspěšně vytvořilo 74 kontaktů (ověřeno
   jak přes API, tak — po chvilkovém zmatku s UI záložkou "Přehled", která bulk-importované kontakty
   nezobrazuje, viz sekce Zpětná vazba pro Fakturoid — přes záložku "Všechny"). Vydané faktury za
@@ -609,3 +627,12 @@ matoucí/nedokumentované chování jejich API a UI:
   1544448 --yes` vytvořilo přesně 6 faktur (`VF1-0001-2026` … `VF1-0006-2026`) se správnými
   odběrateli a částkami, ověřeno zpětně přes API. `_raise_for_status()` teď surfacuje tělo chybové
   odpovědi — bez toho by se skutečná příčina `422` nikdy nenašla.
+- **v0.10** (tento dokument) — **cutover na aktuální rok kompletně hotov.** Přijaté faktury
+  (`expenses`) narazily na tři další reálné problémy: číselná řada tu na rozdíl od `invoices` není
+  konfigurovatelná vůbec (řešení: auto-`number` + originál do `custom_id`, dedup přepnut na
+  `custom_id`), řádky s nulovým množstvím (`Zaokrouhleno`) Fakturoid odmítá (`map_invoice_lines` je
+  filtruje), a `due_on` dřívější než datum vystavení u zálohových dokladů (mapper ho teď vynechá).
+  Cestou taky odhaleno a opraveno: run log se ukládal jen na konci běhu, takže pád v půlce dávky
+  nechal první úspěšně vytvořené záznamy zcela netrasované pro rollback — teď se ukládá po každém
+  záznamu. Finální stav živého účtu ověřen: 74 kontaktů, 6 vydaných faktur, 39 přijatých faktur, bez
+  duplicit. Doplněna zpětná vazba pro Fakturoid o dvou dalších nedokumentovaných chováních API.

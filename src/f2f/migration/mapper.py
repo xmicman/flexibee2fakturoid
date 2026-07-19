@@ -190,7 +190,13 @@ def plan_invoices_migration(
     map_fn = map_issued_invoice if modul == "FAV" else map_received_expense
     plan = InvoiceMigrationPlan()
     seen_in_this_run: set[str] = set()
-    for invoice in invoices:
+    # Fakturoid's number_format counter needs strictly increasing numbers
+    # — confirmed live (2026-07-19): creating VF1-0003-2026 first (before
+    # 0001/0002 existed) got 422 even though it matched the configured
+    # pattern. Process oldest-issued-first so sequence numbers land in
+    # the order Fakturoid's counter expects. Source table order from
+    # pgdumplib is not chronological.
+    for invoice in sorted(invoices, key=lambda i: (i.datvyst, i.kod)):
         if since is not None and invoice.datvyst < since:
             continue
         if until is not None and invoice.datvyst >= until:

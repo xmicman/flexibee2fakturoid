@@ -497,6 +497,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 | 3 | Vydané faktury | Parser `ddoklfak`/`dpolfak` (modul=FAV), mapper, lookup kontaktů, `--since`/`--until` filtr, import. Zachování číslování, stav úhrady, měna, validace součtů. První ostrý běh omezen na aktuální rok (viz [Cutover strategie](#cutover-strategie-postupný-import)), historie doimportována postupně později. |
 | 4 | Přijaté faktury | Totéž pro modul=FAP, import přes `inbox_invoices` (ověřit endpoint). Stejný `--since`/`--until` cutover přístup jako Fáze 3. |
 | 5 | Polish + wrap-up | Edge cases (různé DPH sazby, kontakty bez IČO, storno doklady, zálohové faktury), unit testy, README. Měna a stav úhrady jsou core mapping od Fáze 3, ne edge case zde. Kód zůstává veřejný na GitHubu jako inspirace, ne jako udržovaný OSS projekt — bez ambice podporovat cizí FlexiBee instalace (viz [Publikum a rozsah](#publikum-a-rozsah)). |
+| — | PDF přílohy faktur (#9) | Ex-post, nezávisle na ostatních fázích — provede se až po dokončení core migrace (cutover + historický backfill, #8). Ne mission-critical, nemá číslo fáze, protože neblokuje ani není blokováno ničím výše. |
 
 ## Open Questions
 
@@ -506,7 +507,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 | Q2 | Fakturoid endpoint pro přijaté faktury — `inbox_invoices` nebo jiný? | Fakturoid API docs / sandbox test | Otevřeno |
 | Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | `GET /accounts/{slug}/number_formats.json` vrací seznam číselných řad s `id`, který se používá při tvorbě dokladu — potvrzuje, že *vlastní řadu* si lze zvolit/vytvořit. Neověřeno: jde nastavit i konkrétní historické `number` přímo na jednom dokladu (mimo automatickou řadu), nebo číselná řada jen určuje vzor pro *budoucí* automatické číslování? Rozhodující test před Fází 3. | 🟡 Částečně objasněno |
 | Q4 | Přijaté faktury — kompletní data v záloze (dodavatel, položky, částky)? | Inspect reálné zálohy | ✅ **Vyřešeno** — 726 řádků FAP v `ddoklfak`, položky v `dpolfak` propojené přes `iddoklfak` |
-| Q5 | PDF přílohy k fakturám — zachovat nebo ignorovat? | Tabulky `wpriloha`/`wprilohadata` existují v záloze — obsahují binární data příloh | Otevřeno, mimo scope v0.1 migrace |
+| Q5 | PDF přílohy k fakturám — zachovat nebo ignorovat? | Tabulky `wpriloha`/`wprilohadata` existují v záloze — obsahují binární data příloh | 🟢 **Rozhodnuto** — ano, zachovat, ale ex-post po dokončení core migrace (#9), ne mission-critical a ne blokující |
 | Q6 | Zálohové faktury (`idtypdokl` = ZÁLOHA/ZDD) a dobropisy — migrovat jako běžné faktury, jinak, nebo vynechat? | Konzultace s uživatelem, ověření Fakturoid podpory dobropisů | Nové |
 | Q7 | Institucionální kontakty (zdravotka, socialka, finanční úřad) v `aadresar` — migrovat jako běžné subjekty? | `f2f migrate --fakturoid-slug … --fakturoid-token …` (dry-run) na reálné záloze | 🟢 **Rozhodnuto (implementace)** — vynechány by default. Skutečná distribuce: 442× `financniUrad`, 89× `socialka`, 10× `zdravotka` (541 z 615 řádků — vestavěné číselníky FlexiBee, ne obchodní vztahy vytvořené uživatelem). Přepínatelné přes `--include-institutional-contacts`, pokud se ukáže, že je uživatel přece jen chce. |
 | Q8 | Storno doklady (`storno = true`) — vynechat z migrace? | Konzultace s uživatelem | Nové |

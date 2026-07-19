@@ -113,6 +113,11 @@ async def apply_contact_plan(
     for contact, subject in plan.to_create:
         created = await client.create_subject(subject.model_dump(exclude_none=True))
         run_log.record("subject", created["id"], str(contact.idfirmy))
+        # Saved after every record, not just at the end of the whole
+        # migrate run — confirmed the hard way (2026-07-19) that a
+        # mid-batch failure otherwise leaves earlier successful creates
+        # completely untracked for rollback, even though they're real.
+        run_log.save()
         created_count += 1
     return created_count
 
@@ -176,6 +181,7 @@ async def apply_invoice_plan(
             await client.create_invoice(body) if modul == "FAV" else await client.create_expense(body)
         )
         run_log.record(entity_type, created["id"], str(invoice.iddoklfak))
+        run_log.save()  # see apply_contact_plan — incremental, not end-of-run
         created_count += 1
 
         if invoice.is_paid:

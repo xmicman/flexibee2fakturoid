@@ -111,6 +111,15 @@ def map_invoice_line(line: FlexInvoiceLine) -> InvoiceLine:
     )
 
 
+def map_invoice_lines(lines: list[FlexInvoiceLine]) -> list[InvoiceLine]:
+    """Fakturoid requires quantity > 0 — confirmed live (2026-07-19):
+    a zero-quantity "Zaokrouhleno" (rounding) line from FlexiBee got
+    422'd. Observed with unit_price=0 too, so dropping it doesn't lose
+    any monetary value; the actual rounding is already reflected in the
+    document's header totals, not in this line."""
+    return [map_invoice_line(line) for line in lines if line.mnozmj != 0]
+
+
 def map_issued_invoice(
     invoice: FlexInvoice,
     lines: list[FlexInvoiceLine],
@@ -136,7 +145,7 @@ def map_issued_invoice(
         variable_symbol=invoice.varsym,
         currency=currency,
         number_format_id=number_format_id,
-        lines=[map_invoice_line(line) for line in lines],
+        lines=map_invoice_lines(lines),
     )
 
 
@@ -162,7 +171,7 @@ def map_received_expense(
         variable_symbol=invoice.varsym,
         currency=currency,
         custom_id=invoice.kod,
-        lines=[map_invoice_line(line) for line in lines],
+        lines=map_invoice_lines(lines),
     )
 
 

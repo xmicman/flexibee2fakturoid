@@ -28,6 +28,13 @@ zachytila dřív než sám autor na svém ostrém účtu.
   žádnou cestu, kde by se import spustil bez explicitního potvrzení.
 - **Idempotence.** Import musí být bezpečné spustit opakovaně — dedup přes IČO (kontakty) a číslo
   faktury (faktury). Nikdy nevytvářej duplicitní záznam ve Fakturoidu.
+- **Dedup přes lokální cache, ne per-record `GET`.** Fakturoid free tier má limit 1500 API
+  požadavků/měsíc, migrace má ~1664 záznamů — `GET` před každým `POST` by rozpočet sám o sobě
+  vyčerpal. Seznam existujících subjektů/faktur se stáhne jednou (paginovaně) na začátek běhu a dedup
+  se řeší proti lokálnímu indexu. Viz [docs/spec.md#fakturoid-import](docs/spec.md#fakturoid-import).
+- **Nikdy nevolej explicitní send/notify endpointy** (`send_by_email.json` a podobné). Vytvoření
+  záznamu přes `POST` samo o sobě email neodesílá (ověřeno v nastavení účtu) — ale explicitní
+  odeslání by u historického importu znamenalo stovky nechtěných emailů reálným zákazníkům.
 - **Unit testy běží bez zálohy a bez sítě.** Parser/mapper testy používají fixtures v
   `tests/fixtures/` (vzorové řádky/tuples), ne reálný `.winstrom-backup`.
 - **End-to-end testy nikdy neběží proti reálnému Fakturoid účtu ani sandboxu.** Celý `migrate` flow

@@ -1,6 +1,6 @@
 # flexibee2fakturoid — Technická specifikace
 
-> Stav: Draft v0.3 — backup-first přístup, ověřeno proti reálné záloze.
+> Stav: Draft v0.4 — backup-first přístup, ověřeno proti reálné záloze, doplněno o Fakturoid API limity a bezpečnostní pravidla kolem odesílání emailů.
 > Nahrazuje artefakt v0.2, který předpokládal jiný formát zálohy (viz [Historie](#historie-verzí) níže).
 
 ## Publikum a rozsah
@@ -194,6 +194,8 @@ Backup soubor je v `.gitignore` — spravuje ho uživatel sám, nikdy se necommi
 | `idfirmy` (FK → `aadresar.idfirmy`) | `subject_id` | Lookup: FlexiBee interní ID → Fakturoid ID vytvořené při importu kontaktů |
 | `varsym` | `variable_symbol` | |
 | `sumcelkem` | validace součtu | Křížová kontrola po importu |
+| `datuhr` (vyplněno = zaplaceno) | stav úhrady (endpoint/pole ověřit — Fakturoid má koncept "zaplaceno" na faktuře) | **Core mapping, ne edge case.** Bez tohohle budou všechny historické faktury ve Fakturoidu vypadat jako nezaplacené hned po importu |
+| `mena` + `sumcelkemmen` (cizoměnová částka) | `currency` | **Core mapping, ne edge case.** Default CZK, ale zahraniční faktury musí být namapované od začátku Fáze 3, ne dořešené až v polish |
 | `modul` | rozhodnutí FAV/FAP | Filtr, ne přímé pole |
 | `idtypdokl` (FK → `dtypdokl`) | — | Rozlišuje fakturu / zálohu / ZDD / dobropis — ověřit, zda se má zálohová faktura migrovat jinak |
 | `storno` | — | Stornované doklady pravděpodobně přeskočit |
@@ -226,14 +228,50 @@ Fakturoid REST API v3. Autentizace: **Personal Access Token (PAT)** — uživate
 
 ### Idempotence
 
-Před každým importem kontrola existence záznamu — lookup přes IČO (kontakty) nebo číslo faktury (faktury).
-Duplicity se přeskočí s logem. Bezpečné pro opakované spuštění.
+**Dedup se nedělá per-record GET dotazem** (viz API limity níže — při 1664+ záznamech by to samo
+o sobě spotřebovalo většinu měsíčního rozpočtu requestů). Místo toho runner na začátku migrace
+jednou stáhne **kompletní seznam** existujících subjektů a faktur (paginované `GET`), postaví si
+lokální in-memory index (`registration_no → subject_id`, `number → invoice_id`) a dedup kontroluje
+proti němu. Teprve nový/neexistující záznam vede k `POST`. Bezpečné pro opakované spuštění.
+
+### API limity a rozpočet requestů
+
+Tarif **Zdarma / Na lehko**: **1500 API požadavků / kalendářní měsíc.** Limit je měkký — Fakturoid
+při jednorázovém překročení (do 15 000 požadavků) nic neúčtuje ani neomezuje, opakované překračování
+doporučí vyšší tarif. (Zdroj: nastavení účtu autora, ověřeno 2026-07-19.)
+
+Reálná záloha obsahuje ~615 kontaktů + 323 vydaných + 726 přijatých faktur = **~1664 záznamů k
+vytvoření.** I s dedup přes lokální index (pár desítek `GET` na stažení seznamů, ne stovky) se
+samotné `POST` požadavky na vytvoření pohybují těsně kolem měsíčního limitu volného tarifu. Číselné
+položky faktur (`dpolfak`) jdou většinou v těle `POST` na fakturu, ne jako samostatný request —
+ověřit v Fakturoid API docs, jestli náhodou nejde o zvláštní endpoint per položka (to by rozpočet
+výrazně prodražilo).
+
+Praktické důsledky:
+- **Naivní "GET před každým POST" dedup je mimo rozpočet** — proto cachovaný index výše, ne volitelná optimalizace.
+- Opakované `--dry-run` iterace během ladění taky spotřebovávají budget (stahují seznamy pro report) — počítat s tím při iterování, nezkoušet to donekonečna ve stejném měsíci.
+- Jednorázové mírné překročení limitu při finálním produkčním běhu je dle vlastní politiky Fakturoidu v pořádku a nic nestojí — není důvod kvůli tomu předplácet vyšší tarif jen na jednorázovou migraci.
+- `f2f rollback` (mazání) spotřebovává requesty stejně jako import — dalších až ~1664 při plném rollbacku. Neplýtvat: rollback zavolat, jen když je to skutečně potřeba.
+
+### Žádné explicitní odesílání
+
+Ověřeno v nastavení Fakturoid účtu autora: `POST` na vytvoření faktury/kontaktu **sám o sobě
+neodesílá žádný email.** Odeslání faktury zákazníkovi je samostatná, explicitní akce —
+`POST .../invoices/{id}/send_by_email.json` (šablony "Nová faktura", upomínky atd. se odesílají jen
+ručně nebo tímhle voláním, ne jako vedlejší efekt vytvoření záznamu).
+
+<div style="border-left:3px solid firebrick;padding-left:1em">
+<strong>Tvrdé pravidlo</strong><br>
+Migrační kód nikdy nevolá <code>send_by_email.json</code> ani žádný jiný explicitní send/notify
+endpoint. Import stovek historických faktur by jinak reálným zákazníkům a dodavatelům rozeslal
+stovky nechtěných emailů o letitých fakturách.
+</div>
 
 ### Rate limiting
 
 ```python
 async def _post(self, endpoint: str, payload: dict) -> dict:
-    await asyncio.sleep(0.35)       # ~3 req/s, Fakturoid limit je vyšší
+    await asyncio.sleep(0.35)       # per-request throttling, ochrana proti 429
     resp = await self._client.post(endpoint, json=payload)
     if resp.status_code == 429:
         await asyncio.sleep(5)
@@ -241,6 +279,11 @@ async def _post(self, endpoint: str, payload: dict) -> dict:
     resp.raise_for_status()
     return resp.json()
 ```
+
+`429` (krátkodobý rate limit na request/s) a měsíční kvóta 1500 požadavků jsou **dva různé limity** —
+retry logika výše řeší jen ten první. Vyčerpání měsíční kvóty se neprojeví jako `429` retryovatelný
+requestem znovu za pár vteřin; runner by měl takový stav rozpoznat (chybová odpověď API při
+vyčerpané kvótě) a migraci čitelně zastavit s reportem "hotovo X z Y", ne slepě zkoušet dál donekonečna.
 
 ## CLI Interface
 
@@ -394,9 +437,9 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 |---|---|---|
 | 1 | Backup parser + inspect | `pyproject.toml`, CLI skeleton, `pgdumplib` wrapper nad klíčovými tabulkami. Výstup: `f2f inspect firma.winstrom-backup` zobrazí počty entit a vzorový záznam každého typu. |
 | 2 | Kontakty → Fakturoid | Pydantic modely, mapper, httpx klient, import s deduplikací přes IČO. Dry-run výstup v tabulce. |
-| 3 | Vydané faktury | Parser `ddoklfak`/`dpolfak` (modul=FAV), mapper, lookup kontaktů, import. Zachování číslování, validace součtů. |
+| 3 | Vydané faktury | Parser `ddoklfak`/`dpolfak` (modul=FAV), mapper, lookup kontaktů, import. Zachování číslování, stav úhrady, měna, validace součtů. |
 | 4 | Přijaté faktury | Totéž pro modul=FAP, import přes `inbox_invoices` (ověřit endpoint). |
-| 5 | Polish + wrap-up | Edge cases (zahraniční faktury, různé DPH sazby, kontakty bez IČO, storno doklady, zálohové faktury), unit testy, README. Kód zůstává veřejný na GitHubu jako inspirace, ne jako udržovaný OSS projekt — bez ambice podporovat cizí FlexiBee instalace (viz [Publikum a rozsah](#publikum-a-rozsah)). |
+| 5 | Polish + wrap-up | Edge cases (různé DPH sazby, kontakty bez IČO, storno doklady, zálohové faktury), unit testy, README. Měna a stav úhrady jsou core mapping od Fáze 3, ne edge case zde. Kód zůstává veřejný na GitHubu jako inspirace, ne jako udržovaný OSS projekt — bez ambice podporovat cizí FlexiBee instalace (viz [Publikum a rozsah](#publikum-a-rozsah)). |
 
 ## Open Questions
 
@@ -404,7 +447,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 |---|---|---|---|
 | Q1 | Přesná struktura zálohy — formát, tabulky, sloupce | `f2f inspect` | ✅ **Vyřešeno** — je to `pg_dump -Fc`, ne ZIP+XML. Klíčové tabulky zdokumentovány výše. |
 | Q2 | Fakturoid endpoint pro přijaté faktury — `inbox_invoices` nebo jiný? | Fakturoid API docs / sandbox test | Otevřeno |
-| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | Fakturoid API — pole `number` na invoice POST | Otevřeno |
+| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | `GET /accounts/{slug}/number_formats.json` vrací seznam číselných řad s `id`, který se používá při tvorbě dokladu — potvrzuje, že *vlastní řadu* si lze zvolit/vytvořit. Neověřeno: jde nastavit i konkrétní historické `number` přímo na jednom dokladu (mimo automatickou řadu), nebo číselná řada jen určuje vzor pro *budoucí* automatické číslování? Rozhodující test před Fází 3. | 🟡 Částečně objasněno |
 | Q4 | Přijaté faktury — kompletní data v záloze (dodavatel, položky, částky)? | Inspect reálné zálohy | ✅ **Vyřešeno** — 726 řádků FAP v `ddoklfak`, položky v `dpolfak` propojené přes `iddoklfak` |
 | Q5 | PDF přílohy k fakturám — zachovat nebo ignorovat? | Tabulky `wpriloha`/`wprilohadata` existují v záloze — obsahují binární data příloh | Otevřeno, mimo scope v0.1 migrace |
 | Q6 | Zálohové faktury (`idtypdokl` = ZÁLOHA/ZDD) a dobropisy — migrovat jako běžné faktury, jinak, nebo vynechat? | Konzultace s uživatelem, ověření Fakturoid podpory dobropisů | Nové |
@@ -416,5 +459,11 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 
 - **v0.1** — první návrh, počítal s FlexiBee REST API + Playwright browser automation.
 - **v0.2** — backup-first přístup, ale mylně předpokládal, že `.winstrom-backup` je ZIP s Winstrom XML.
-- **v0.3** (tento dokument) — opraveno na základě skutečné inspekce zálohy: PostgreSQL custom-format
+- **v0.3** — opraveno na základě skutečné inspekce zálohy: PostgreSQL custom-format
   dump, čtený přes `pgdumplib`. Tech stack a field mapping aktualizovány na reálné názvy tabulek/sloupců.
+  Přidána Testing Strategy (mock Fakturoid API), Rollback & Failure Recovery a přerámování na osobní
+  nástroj (kód veřejný jako inspirace, ne udržovaný OSS projekt).
+- **v0.4** (tento dokument) — doplněno o reálná zjištění z Fakturoid účtu autora: měsíční API limit
+  1500 requestů na volném tarifu (a jeho měkká politika při překročení), potvrzení že `POST` na
+  vytvoření záznamu neodesílá email automaticky (tvrdé pravidlo: nikdy nevolat `send_by_email.json`),
+  a detail k `number_formats.json` pro Q3 (číselné řady).

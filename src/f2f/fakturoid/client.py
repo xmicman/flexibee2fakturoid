@@ -87,16 +87,20 @@ class FakturoidClient:
         if self._token_expires_at > time.monotonic():
             return
         # Only reached for OAuth2 mode — static tokens set expires_at=inf.
-        # Confirmed against a live account (2026-07-19): despite docs
-        # implying JSON is also accepted, the real endpoint returns 415
-        # for a `json=` body. Needs an explicit Content-Type override here
-        # because the client's default header (application/json, used for
-        # every other endpoint) would otherwise win over httpx's automatic
-        # form-encoding content-type for `data=`.
+        # Body matches the literal example at
+        # https://www.fakturoid.cz/api/v3/authorization#client-credentials-flow
+        # verbatim. KNOWN ISSUE (2026-07-19, see docs/spec.md Open Question
+        # Q3 / CLAUDE.md): a live trial account gets 415 Unsupported Media
+        # Type on this exact request. Also tried RFC 6749 §4.4's
+        # application/x-www-form-urlencoded form — same 415. Both request
+        # shapes verified byte-for-byte correct offline via
+        # httpx.MockTransport, so this isn't a client-side encoding bug;
+        # root cause is unconfirmed (account/app config? trial tier gating
+        # OAuth specifically?). Needs Fakturoid support or a working
+        # account to resolve — not blocking if a plain PAT is used instead.
         resp = await self._client.post(
             "/oauth/token",
-            data={"grant_type": "client_credentials"},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            json={"grant_type": "client_credentials"},
             auth=(self._client_id, self._client_secret),
         )
         resp.raise_for_status()

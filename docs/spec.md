@@ -257,6 +257,10 @@ Tarif **Zdarma / Na lehko**: **1500 API požadavků / kalendářní měsíc.** L
 při jednorázovém překročení (do 15 000 požadavků) nic neúčtuje ani neomezuje, opakované překračování
 doporučí vyšší tarif. (Zdroj: nastavení účtu autora, ověřeno 2026-07-19.)
 
+> **Aktualizace 2026-07-19:** účet autora je teď na trial tarifu **Na maximum** (17 dní, do 5. 8.
+> 2026), který má výrazně vyšší/žádný pevný měsíční limit. Po skončení trialu se tarif může vrátit
+> na Zdarma — počítat s rozpočtem níže jako s dlouhodobým plánem, ne s tím, co platí tenhle měsíc.
+
 Reálná záloha obsahuje ~74 skutečných kontaktů (viz Field Mapping — 541 z 615 řádků `aadresar` jsou
 vestavěné referenční číselníky, vynechané z migrace) + 323 vydaných + 726 přijatých faktur =
 **~1123 záznamů k vytvoření.** I s dedup přes lokální index (pár desítek `GET` na stažení seznamů, ne
@@ -527,6 +531,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 | Q7 | Institucionální kontakty (zdravotka, socialka, finanční úřad) v `aadresar` — migrovat jako běžné subjekty? | `f2f migrate --fakturoid-slug … --fakturoid-token …` (dry-run) na reálné záloze | 🟢 **Rozhodnuto (implementace)** — vynechány by default. Skutečná distribuce: 442× `financniUrad`, 89× `socialka`, 10× `zdravotka` (541 z 615 řádků — vestavěné číselníky FlexiBee, ne obchodní vztahy vytvořené uživatelem). Přepínatelné přes `--include-institutional-contacts`, pokud se ukáže, že je uživatel přece jen chce. |
 | Q8 | Storno doklady (`storno = true`) — vynechat z migrace? | Konzultace s uživatelem | Nové |
 | Q9 | Kódování `astaty.kod` — čisté ISO 3166-1 alpha-2, nebo FlexiBee specifický formát (pozorováno `XI` pro Severní Irsko)? | Projít číselník `astaty` v `f2f inspect` | Nové |
+| Q10 | OAuth2 Client Credentials (`POST /oauth/token`) vrací `415 Unsupported Media Type` na živém trial účtu autora, přestože request přesně odpovídá [dokumentaci](https://www.fakturoid.cz/api/v3/authorization#client-credentials-flow) — ověřeno offline přes `httpx.MockTransport` (JSON i form-urlencoded tělo, oba s Basic auth), obě varianty na živém API selhávají identicky. Autor potvrdil, že credentials jsou správně pro Client Credentials Flow. | Kontaktovat Fakturoid podporu s detailem requestu, nebo zkusit `--fakturoid-token` (PAT) jako obchozí cestu | 🔴 **Neuzavřeno** — příčina neznámá (možná account/app konfigurace, možná gating na trial tarifu). Neblokuje migraci samotnou, jen OAuth2 auth mód — PAT funguje nezávisle. |
 
 ## Historie verzí
 

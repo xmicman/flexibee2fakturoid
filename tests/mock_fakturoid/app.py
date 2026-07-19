@@ -74,14 +74,19 @@ def create_app(
 
     @app.post("/oauth/token")
     def oauth_token() -> Any:
-        # Verified against a live account (2026-07-19): client_id/secret
-        # via HTTP Basic auth, grant_type as form-urlencoded body — the
-        # real endpoint returns 415 for a JSON body despite docs implying
-        # both are accepted.
+        # Matches the literal example at
+        # https://www.fakturoid.cz/api/v3/authorization#client-credentials-flow:
+        # client_id/secret via HTTP Basic auth, grant_type in a JSON body.
+        # A real trial account 415s on this exact shape for reasons not
+        # yet understood — see FakturoidClient._ensure_access_token. The
+        # mock intentionally mirrors the documented (not the observed
+        # broken) behavior, since we can't tell yet whether the live 415
+        # is Fakturoid's real contract or an account-specific fault.
         auth = request.authorization
         if not auth or auth.username != oauth_client_id or auth.password != oauth_client_secret:
             return jsonify({"error": "invalid_client"}), 401
-        if request.form.get("grant_type") != "client_credentials":
+        payload = request.get_json(force=True) or {}
+        if payload.get("grant_type") != "client_credentials":
             return jsonify({"error": "unsupported_grant_type"}), 400
         return jsonify({"access_token": oauth_access_token, "token_type": "Bearer", "expires_in": 7200})
 

@@ -65,7 +65,17 @@ class FakturoidClient:
         self._token_expires_at = float("inf") if token else 0.0
         self._client = httpx.AsyncClient(
             base_url=base_url,
-            headers={"User-Agent": user_agent, "Content-Type": "application/json"},
+            # Both headers required — see https://www.fakturoid.cz/api/v3#json:
+            # "Requests requesting a different type of response will
+            # receive 415 Unsupported Media Type" refers to Accept, not
+            # just Content-Type. httpx defaults Accept to "*/*", which
+            # triggered exactly this 415 against a live account — see Q10
+            # in docs/spec.md.
+            headers={
+                "User-Agent": user_agent,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
             timeout=30.0,
         )
 

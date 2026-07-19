@@ -1,10 +1,9 @@
 # flexibee2fakturoid — Technická specifikace
 
-> Stav: v0.7 — Fáze 1–4 a rollback implementované a end-to-end otestované proti mock Fakturoid serveru
-> i proti reálné záloze. Q2 (endpoint `expenses`) a Q3 (číslování) ověřeny proti oficiální Fakturoid
-> API dokumentaci — kód opraven podle skutečného API tvaru (mj. platby jsou samostatný endpoint, ne
-> pole na faktuře). **Zbývá jediné:** potvrdit proti živému volání reálného Fakturoid sandboxu, ne
-> jen proti dokumentaci — viz Open Questions Q2/Q3.
+> Stav: v0.8 — Fáze 1–4 a rollback implementované, end-to-end otestované proti mock Fakturoid serveru,
+> proti reálné záloze, a teď i **živě proti reálnému Fakturoid trial účtu autora** (dry-run — OAuth2
+> autentizace, `GET` na subjects/invoices/expenses). Zbývá jediné: skutečný `POST` s historickým
+> číslem faktury (Q3), ten vyžaduje `--yes`.
 > Nahrazuje artefakt v0.2, který předpokládal jiný formát zálohy (viz [Historie](#historie-verzí) níže).
 
 ## Publikum a rozsah
@@ -523,15 +522,15 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 | # | Otázka | Jak ověřit | Stav |
 |---|---|---|---|
 | Q1 | Přesná struktura zálohy — formát, tabulky, sloupce | `f2f inspect` | ✅ **Vyřešeno** — je to `pg_dump -Fc`, ne ZIP+XML. Klíčové tabulky zdokumentovány výše. |
-| Q2 | Fakturoid endpoint pro přijaté faktury — `inbox_invoices` nebo jiný? | Ověřeno proti [oficiální dokumentaci](https://www.fakturoid.cz/api/v3/expenses) (2026-07-19, dva nezávislé fetch průchody se shodují) | 🟢 **Vyřešeno proti dokumentaci** — endpoint je `expenses` (`POST/GET /accounts/{slug}/expenses.json`), `inbox_invoices` neexistuje. Implementováno v `client.py`/mapperu. **Zbývá:** potvrdit proti živému volání (dokumentace ≠ garance chování), viz poznámka níže. |
-| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | Ověřeno proti [dokumentaci invoices](https://www.fakturoid.cz/api/v3/invoices) a [expenses](https://www.fakturoid.cz/api/v3/expenses) (2026-07-19) | 🟢 **Vyřešeno proti dokumentaci, s výhradou** — `number` je přímo zapisovatelné pole na obou endpointech. U `invoices` (vydané) ale musí odpovídat nastavenému `number_format`, jinak `422` s chybou "The number does not match the number format in the settings" — u historických čísel jako `VF1-0009/2024` to může selhat, pokud se nenakonfiguruje odpovídající číselná řada předem. U `expenses` (přijaté) dokumentace toto omezení nezmiňuje vůbec — pravděpodobně bez constraint. **Zbývá ověřit na malé letošní dávce (6 vydaných faktur) proti reálnému sandboxu**, jestli `number_format` u účtu autora historická čísla propustí, nebo je potřeba číselnou řadu nejdřív založit/upravit. |
+| Q2 | Fakturoid endpoint pro přijaté faktury — `inbox_invoices` nebo jiný? | Ověřeno proti dokumentaci i živě proti trial účtu autora (2026-07-19) | 🟢 **Vyřešeno.** Endpoint je `expenses`. `GET /accounts/{slug}/expenses.json` živě funguje (dry-run `--only received-invoices` proběhl bez chyby, 39 faktur za 2026 správně rozpoznáno). `POST` (vytvoření) zatím neověřen živě — dry-run nikdy nezapisuje, viz Q3. |
+| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | Ověřeno proti dokumentaci (2026-07-19); `GET` strana ověřena živě | 🟡 **Částečně ověřeno živě.** `number` je zapisovatelné pole, u `invoices` musí odpovídat `number_format` účtu (jinak `422`). Dry-run proti živému účtu autora potvrdil, že `GET /invoices.json` a `GET /expenses.json` fungují a autentizace/mapping je správně (6 vydaných + 39 přijatých faktur za 2026 správně rozpoznáno, čekají jen na chybějící kontakty). **Skutečné `POST` s historickým číslem (např. `VF1-0009/2024`) zatím neproběhlo** — to vyžaduje `--yes`, dry-run ho z principu netestuje. Poslední krok k uzavření Q3. |
 | Q4 | Přijaté faktury — kompletní data v záloze (dodavatel, položky, částky)? | Inspect reálné zálohy | ✅ **Vyřešeno** — 726 řádků FAP v `ddoklfak`, položky v `dpolfak` propojené přes `iddoklfak` |
 | Q5 | PDF přílohy k fakturám — zachovat nebo ignorovat? | Tabulky `wpriloha`/`wprilohadata` existují v záloze — obsahují binární data příloh | 🟢 **Rozhodnuto** — ano, zachovat, ale ex-post po dokončení core migrace (#9), ne mission-critical a ne blokující |
 | Q6 | Zálohové faktury (`idtypdokl` = ZÁLOHA/ZDD) a dobropisy — migrovat jako běžné faktury, jinak, nebo vynechat? | Konzultace s uživatelem, ověření Fakturoid podpory dobropisů | Nové |
 | Q7 | Institucionální kontakty (zdravotka, socialka, finanční úřad) v `aadresar` — migrovat jako běžné subjekty? | `f2f migrate --fakturoid-slug … --fakturoid-token …` (dry-run) na reálné záloze | 🟢 **Rozhodnuto (implementace)** — vynechány by default. Skutečná distribuce: 442× `financniUrad`, 89× `socialka`, 10× `zdravotka` (541 z 615 řádků — vestavěné číselníky FlexiBee, ne obchodní vztahy vytvořené uživatelem). Přepínatelné přes `--include-institutional-contacts`, pokud se ukáže, že je uživatel přece jen chce. |
 | Q8 | Storno doklady (`storno = true`) — vynechat z migrace? | Konzultace s uživatelem | Nové |
 | Q9 | Kódování `astaty.kod` — čisté ISO 3166-1 alpha-2, nebo FlexiBee specifický formát (pozorováno `XI` pro Severní Irsko)? | Projít číselník `astaty` v `f2f inspect` | Nové |
-| Q10 | OAuth2 Client Credentials (`POST /oauth/token`) vrací `415 Unsupported Media Type` na živém trial účtu autora, přestože request přesně odpovídá [dokumentaci](https://www.fakturoid.cz/api/v3/authorization#client-credentials-flow) — ověřeno offline přes `httpx.MockTransport` (JSON i form-urlencoded tělo, oba s Basic auth), obě varianty na živém API selhávají identicky. Autor potvrdil, že credentials jsou správně pro Client Credentials Flow. | Kontaktovat Fakturoid podporu s detailem requestu, nebo zkusit `--fakturoid-token` (PAT) jako obchozí cestu | 🔴 **Neuzavřeno** — příčina neznámá (možná account/app konfigurace, možná gating na trial tarifu). Neblokuje migraci samotnou, jen OAuth2 auth mód — PAT funguje nezávisle. |
+| Q10 | OAuth2 Client Credentials (`POST /oauth/token`) vracel `415 Unsupported Media Type` na živém trial účtu autora, přestože tělo requestu přesně odpovídalo dokumentaci. | Živý test proti trial účtu autora | 🟢 **Vyřešeno** — příčina byla chybějící `Accept: application/json` hlavička na klientovi (httpx defaultně posílá `Accept: */*`). [Dokumentace](https://www.fakturoid.cz/api/v3#json) říká "Requests requesting a different type of response will receive 415" — to je o `Accept`, ne (jen) o `Content-Type`, jak jsme si mysleli. Po opravě token exchange i celý `f2f migrate --only contacts` dry-run proběhly úspěšně proti reálnému API. |
 
 ## Historie verzí
 
@@ -556,7 +555,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
   fungují přesně dle plánu (letošní dávka: 6 vydaných + 39 přijatých, sedí s dřívějším odhadem).
   Q2 a Q3 zůstávají neověřené proti živému Fakturoid API — implementováno podle nejlepšího odhadu,
   nutno ověřit na sandboxu před prvním produkčním `--yes` během.
-- **v0.7** (tento dokument) — Q2 a Q3 ověřeny proti oficiální Fakturoid API dokumentaci (dva nezávislé
+- **v0.7** — Q2 a Q3 ověřeny proti oficiální Fakturoid API dokumentaci (dva nezávislé
   fetch průchody, konzistentní výsledek). Zásadní opravy: endpoint pro přijaté faktury je `expenses`,
   ne `inbox_invoices` (ten neexistuje); stav úhrady se nenastavuje na faktuře, ale přes samostatný
   `POST .../{id}/payments.json` po vytvoření; vydané faktury používají `due` (počet dní) místo
@@ -564,3 +563,13 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
   rozděleno na `Invoice` (vydané) a `Expense` (přijaté), `mapper.py`/`runner.py`/mock server
   odpovídajícím způsobem přepracované, 3 nové e2e testy pro platby. Nezbývá nic z dokumentace k
   dohledání — jediné, co chybí, je potvrzení proti živému volání skutečného sandbox účtu.
+- **v0.8** (tento dokument) — přidána podpora OAuth2 Client Credentials (`--fakturoid-client-id`/
+  `--fakturoid-client-secret`, env `FAKTUROID_CLIENT_ID`/`FAKTUROID_SECRET`) — doporučený auth mód
+  Fakturoidu pro tenhle typ nástroje. Živě otestováno proti reálnému trial účtu autora ("Na
+  maximum", do 2026-08-05): token exchange nejdřív padal na `415`, příčina byla chybějící `Accept:
+  application/json` hlavička (httpx defaultně posílá `Accept: */*`, Fakturoid to bez dalšího
+  vysvětlení odmítá — dokumentace na to upozorňuje jen nepřímo: "requests requesting a different
+  type of response will receive 415"). Po opravě proběhl úspěšně `f2f migrate --only contacts`
+  dry-run (74 k vytvoření, 541 institucionálních přeskočeno — sedí s dřívějším odhadem) i dry-run
+  obou typů faktur proti živému API. Q2 uzavřeno živě, Q3 čeká už jen na skutečný `POST` s
+  historickým číslem (vyžaduje `--yes`, dry-run to z principu netestuje).

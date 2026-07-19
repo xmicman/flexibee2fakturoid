@@ -1,15 +1,28 @@
 from __future__ import annotations
 
-from f2f.flexibee.models import FlexInvoice
-from f2f.migration.mapper import map_issued_invoice, map_received_expense, plan_invoices_migration
+from f2f.flexibee.models import FlexInvoice, FlexInvoiceLine
+from f2f.migration.mapper import (
+    map_invoice_lines,
+    map_issued_invoice,
+    map_received_expense,
+    plan_invoices_migration,
+)
 
 
-def _invoice(iddoklfak: int, kod: str, idfirmy: int = 1, modul: str = "FAV") -> FlexInvoice:
+def _invoice(
+    iddoklfak: int,
+    kod: str,
+    idfirmy: int = 1,
+    modul: str = "FAV",
+    datvyst: str = "2026-01-01",
+    datsplat: str | None = None,
+) -> FlexInvoice:
     return FlexInvoice(
         iddoklfak=iddoklfak,
         kod=kod,
         modul=modul,
-        datvyst="2026-01-01",
+        datvyst=datvyst,
+        datsplat=datsplat,
         idfirmy=idfirmy,
         sumcelkem="100.00",
     )
@@ -76,3 +89,29 @@ def test_expense_dedup_uses_custom_id_not_number() -> None:
     )
     assert len(plan.to_create) == 0
     assert len(plan.to_skip_existing) == 1
+
+
+def test_map_invoice_lines_drops_zero_quantity_line() -> None:
+    # Fakturoid rejects quantity <= 0 — confirmed live 2026-07-19 on a
+    # FlexiBee "Zaokrouhleno" (rounding) line with quantity=0, price=0.
+    lines = [
+        FlexInvoiceLine(iddoklfak=1, nazev="Zaokrouhleno", mnozmj="0", cenamj="0", szbdph="0"),
+        FlexInvoiceLine(iddoklfak=1, nazev="Služba", mnozmj="1", cenamj="100", szbdph="21"),
+    ]
+    mapped = map_invoice_lines(lines)
+    assert len(mapped) == 1
+    assert mapped[0].name == "Služba"
+
+
+def test_due_before_issued_on_is_dropped_not_sent_negative() -> None:
+    # Observed live on a "Z" (zálohová) record: datsplat before datvyst.
+    # Fakturoid rejects a due date/day-count implying overdue-on-arrival.
+    invoice = _invoice(1, "F1", modul="FAV", datvyst="2026-01-14", datsplat="2025-12-31")
+    mapped = map_issued_invoice(invoice, [], subject_id=42, currency_lookup={})
+    assert mapped.due is None
+
+
+def test_due_on_before_issued_on_is_dropped_for_expenses() -> None:
+    invoice = _invoice(1, "F1", modul="FAP", datvyst="2026-01-14", datsplat="2025-12-31")
+    mapped = map_received_expense(invoice, [], subject_id=42, currency_lookup={})
+    assert mapped.due_on is None

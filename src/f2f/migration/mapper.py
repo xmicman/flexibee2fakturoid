@@ -136,6 +136,11 @@ def map_issued_invoice(
     than one number format — see Invoice model docstring for why."""
     currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
     due = (invoice.datsplat - invoice.datvyst).days if invoice.datsplat else None
+    if due is not None and due < 0:
+        # Observed live (2026-07-19) on a "Z" (zálohová) record: datsplat
+        # before datvyst — Fakturoid rejects a due date before issue date.
+        # Omit rather than send something invalid; see docs/spec.md Q6.
+        due = None
     return Invoice(
         number=_normalize_invoice_number(invoice.kod),
         subject_id=subject_id,
@@ -163,11 +168,15 @@ def map_received_expense(
     number goes in `custom_id` (raw, not normalized — no format
     constraint applies to a free-text field)."""
     currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
+    due_on = invoice.datsplat
+    if due_on is not None and due_on < invoice.datvyst:
+        # Same real-data issue as map_issued_invoice — see that comment.
+        due_on = None
     return Expense(
         subject_id=subject_id,
         issued_on=invoice.datvyst,
         received_on=invoice.datvyst,
-        due_on=invoice.datsplat,
+        due_on=due_on,
         variable_symbol=invoice.varsym,
         currency=currency,
         custom_id=invoice.kod,

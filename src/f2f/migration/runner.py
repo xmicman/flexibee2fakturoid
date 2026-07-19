@@ -4,14 +4,15 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 
+import httpx
 from pgdumplib.dump import Dump
 from rich.console import Console
 from rich.table import Table
 
-from f2f.fakturoid.client import FakturoidClient
+from f2f.fakturoid.client import FakturoidClient, FakturoidError
 from f2f.flexibee import backup
 from f2f.flexibee.models import FlexContact, FlexInvoice, FlexInvoiceLine
 from f2f.migration.mapper import (
@@ -172,3 +173,39 @@ async def apply_invoice_plan(
         run_log.record(entity_type, created["id"], str(invoice.iddoklfak))
         created_count += 1
     return created_count
+
+
+def print_run_log_summary(run_log: RunLog, title: str) -> None:
+    counts = Counter(record.entity_type for record in run_log.created)
+    table = Table(title=title)
+    table.add_column("Typ záznamu")
+    table.add_column("Počet", justify="right")
+    for entity_type, count in sorted(counts.items()):
+        table.add_row(entity_type, str(count))
+    table.add_row("celkem", str(len(run_log.created)), style="bold")
+    console.print(table)
+
+
+_DELETE_METHOD_BY_ENTITY_TYPE = {
+    "subject": "delete_subject",
+    "invoice": "delete_invoice",
+    "inbox_invoice": "delete_inbox_invoice",
+}
+
+
+async def apply_rollback(client: FakturoidClient, run_log: RunLog) -> tuple[int, list[str]]:
+    """Delete exactly what `run_log` recorded as created — nothing else.
+    Continues past individual failures (e.g. already deleted by hand) and
+    reports them instead of aborting the whole rollback. See
+    docs/spec.md#rollback--failure-recovery.
+    """
+    deleted = 0
+    failures: list[str] = []
+    for record in run_log.created:
+        delete_fn = getattr(client, _DELETE_METHOD_BY_ENTITY_TYPE[record.entity_type])
+        try:
+            await delete_fn(record.fakturoid_id)
+            deleted += 1
+        except (httpx.HTTPStatusError, FakturoidError) as exc:
+            failures.append(f"{record.entity_type} {record.fakturoid_id}: {exc}")
+    return deleted, failures

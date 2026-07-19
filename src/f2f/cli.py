@@ -18,6 +18,7 @@ from f2f.migration.run_log import RunLog
 from f2f.migration.runner import (
     apply_contact_plan,
     apply_invoice_plan,
+    apply_rollback,
     build_contact_plan,
     build_idfirmy_to_subject_id,
     build_invoice_plan,
@@ -27,6 +28,7 @@ from f2f.migration.runner import (
     load_invoices,
     print_contact_plan,
     print_invoice_plan,
+    print_run_log_summary,
 )
 from f2f.migration.runner import load_contacts as load_flex_contacts
 
@@ -220,6 +222,60 @@ async def _migrate_async(
     run_log_path = run_log.save()  # type: ignore[union-attr]
     console.print(f"\n[green]Hotovo.[/green] Vytvořeno {total_created} záznamů.")
     console.print(f"Run log: {run_log_path} (run-id: {run_log.run_id}, pro rollback)")  # type: ignore[union-attr]
+
+
+@app.command()
+def rollback(
+    run_id: Annotated[str, typer.Argument(help="Run ID z výstupu předchozí migrace")],
+    fakturoid_slug: Annotated[str, typer.Option("--fakturoid-slug", help="Slug Fakturoid účtu")],
+    fakturoid_token: Annotated[
+        str | None,
+        typer.Option("--fakturoid-token", help="PAT token. Bez zadání: FAKTUROID_TOKEN env, jinak interaktivní prompt."),
+    ] = None,
+    fakturoid_base_url: Annotated[
+        str,
+        typer.Option("--fakturoid-base-url", hidden=True, help="Jen pro testy proti mock serveru."),
+    ] = DEFAULT_BASE_URL,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skutečně smazat. Bez tohoto jen ukáže, co by se smazalo."),
+    ] = False,
+) -> None:
+    """Smaž přesně to, co vytvořil daný migrační běh (run-id). Nikdy nesahá na nic jiného.
+
+    Viz docs/spec.md#rollback--failure-recovery."""
+    try:
+        run_log = RunLog.load(run_id)
+    except FileNotFoundError:
+        console.print(f"[red]Run log pro run-id {run_id!r} nenalezen.[/red]")
+        raise typer.Exit(code=1) from None
+
+    if run_log.slug != fakturoid_slug:
+        console.print(
+            f"[red]Run {run_id} patří účtu '{run_log.slug}', ne '{fakturoid_slug}'.[/red] "
+            "Zastavuji, ať se nesmaže něco na jiném účtu."
+        )
+        raise typer.Exit(code=1)
+
+    print_run_log_summary(run_log, f"Rollback {run_id} ({run_log.slug})")
+
+    if not yes:
+        console.print("\n[dim]Dry-run — nic nebylo smazáno. Spusť s --yes pro skutečné smazání.[/dim]")
+        return
+
+    token = _resolve_token(fakturoid_token)
+    asyncio.run(_rollback_async(run_log, fakturoid_slug, token, fakturoid_base_url))
+
+
+async def _rollback_async(run_log: RunLog, slug: str, token: str, base_url: str) -> None:
+    async with FakturoidClient(slug=slug, token=token, base_url=base_url) as client:
+        deleted, failures = await apply_rollback(client, run_log)
+
+    console.print(f"\n[green]Smazáno {deleted} z {len(run_log.created)} záznamů.[/green]")
+    if failures:
+        console.print(f"[red]Nepovedlo se smazat {len(failures)}:[/red]")
+        for failure in failures:
+            console.print(f"  - {failure}")
 
 
 if __name__ == "__main__":

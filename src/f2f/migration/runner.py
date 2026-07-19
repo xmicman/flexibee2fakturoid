@@ -142,6 +142,7 @@ async def build_invoice_plan(
     modul: str,
     since: date | None,
     until: date | None,
+    number_format_id: int | None = None,
 ) -> InvoiceMigrationPlan:
     existing = await client.list_invoices() if modul == "FAV" else await client.list_expenses()
     existing_numbers = {inv["number"] for inv in existing if inv.get("number")}
@@ -154,6 +155,7 @@ async def build_invoice_plan(
         modul,
         since,
         until,
+        number_format_id,
     )
 
 

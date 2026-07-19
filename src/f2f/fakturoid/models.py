@@ -42,6 +42,15 @@ class Invoice(BaseModel):
     `due` is the number of days until the invoice is overdue (relative to
     `issued_on`), not an absolute date — the API's response has a computed
     `due_on`, but create only accepts `due`.
+
+    `number_format_id` matters if the account has more than one number
+    format (common: a default one plus a custom one for migrated
+    numbers) — confirmed live (2026-07-19) that a `number` matching a
+    *non-default* format still gets rejected unless `number_format_id`
+    explicitly selects that format. There's no API to look this up (GET
+    on number formats/generator endpoints all 404 live); find it via
+    browser devtools on the "New invoice" form — the `<select
+    name="invoice[number_format_id]">` element's `<option value="...">`.
     """
 
     number: str
@@ -51,6 +60,7 @@ class Invoice(BaseModel):
     taxable_fulfillment_due: date | None = None
     variable_symbol: str | None = None
     currency: str | None = None
+    number_format_id: int | None = None
     lines: list[InvoiceLine] = []
 
 

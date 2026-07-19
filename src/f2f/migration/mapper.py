@@ -116,11 +116,15 @@ def map_issued_invoice(
     lines: list[FlexInvoiceLine],
     subject_id: int,
     currency_lookup: dict[str, str],
+    number_format_id: int | None = None,
 ) -> Invoice:
     """FAV -> POST /invoices.json payload. Payment status is NOT included
     here — Fakturoid marks a document paid via a separate payments call,
     see apply_invoice_plan. `due` is a day-count, not a date — see
-    Invoice model docstring."""
+    Invoice model docstring.
+
+    `number_format_id` must be passed explicitly if the account has more
+    than one number format — see Invoice model docstring for why."""
     currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
     due = (invoice.datsplat - invoice.datvyst).days if invoice.datsplat else None
     return Invoice(
@@ -131,6 +135,7 @@ def map_issued_invoice(
         taxable_fulfillment_due=invoice.duzppuv,
         variable_symbol=invoice.varsym,
         currency=currency,
+        number_format_id=number_format_id,
         lines=[map_invoice_line(line) for line in lines],
     )
 
@@ -174,6 +179,7 @@ def plan_invoices_migration(
     modul: str,
     since: date | None = None,
     until: date | None = None,
+    number_format_id: int | None = None,
 ) -> InvoiceMigrationPlan:
     """Decide what to create/skip for issued (modul='FAV') or received
     (modul='FAP') invoices.
@@ -186,16 +192,16 @@ def plan_invoices_migration(
     `idfirmy_to_subject_id` must come from a single upfront lookup (built
     by the caller from FlexiBee contacts + a cached Fakturoid subjects
     list), not a per-invoice API call — see docs/spec.md#idempotence.
+
+    `number_format_id` (issued invoices only — see Invoice model
+    docstring) selects which of the account's number formats to validate
+    `number` against, if there's more than one.
     """
-    map_fn = map_issued_invoice if modul == "FAV" else map_received_expense
     plan = InvoiceMigrationPlan()
     seen_in_this_run: set[str] = set()
-    # Fakturoid's number_format counter needs strictly increasing numbers
-    # — confirmed live (2026-07-19): creating VF1-0003-2026 first (before
-    # 0001/0002 existed) got 422 even though it matched the configured
-    # pattern. Process oldest-issued-first so sequence numbers land in
-    # the order Fakturoid's counter expects. Source table order from
-    # pgdumplib is not chronological.
+    # Processed oldest-issued-first: source table order from pgdumplib is
+    # not chronological, and it's safest to create sequence-numbered
+    # documents in the order their numbers imply.
     for invoice in sorted(invoices, key=lambda i: (i.datvyst, i.kod)):
         if since is not None and invoice.datvyst < since:
             continue
@@ -222,5 +228,9 @@ def plan_invoices_migration(
 
         seen_in_this_run.add(normalized_number)
         lines = lines_by_invoice.get(invoice.iddoklfak, [])
-        plan.to_create.append((invoice, map_fn(invoice, lines, subject_id, currency_lookup)))
+        if modul == "FAV":
+            mapped = map_issued_invoice(invoice, lines, subject_id, currency_lookup, number_format_id)
+        else:
+            mapped = map_received_expense(invoice, lines, subject_id, currency_lookup)
+        plan.to_create.append((invoice, mapped))
     return plan

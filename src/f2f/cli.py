@@ -145,6 +145,13 @@ def migrate(
         str | None,
         typer.Option("--until", help="Faktury s datvyst < tomuto datu (YYYY-MM-DD). Netýká se kontaktů."),
     ] = None,
+    number_format_id: Annotated[
+        int | None,
+        typer.Option(
+            "--number-format-id",
+            help="ID číselné řady vydaných faktur ve Fakturoidu — nutné, pokud má účet víc než jednu (viz Invoice model docstring, jak ID zjistit).",
+        ),
+    ] = None,
     include_institutional_contacts: Annotated[
         bool,
         typer.Option(
@@ -176,6 +183,7 @@ def migrate(
             since=since_date,
             until=until_date,
             include_institutional=include_institutional_contacts,
+            number_format_id=number_format_id,
             apply=yes,
         )
     )
@@ -190,6 +198,7 @@ async def _migrate_async(
     since: date | None,
     until: date | None,
     include_institutional: bool,
+    number_format_id: int | None,
     apply: bool,
 ) -> None:
     do_contacts = only in (None, "contacts")
@@ -221,7 +230,7 @@ async def _migrate_async(
             issued = load_invoices(dump, "FAV")
             issued_plan = await build_invoice_plan(
                 client, issued, lines_by_invoice, idfirmy_to_subject_id, currency_lookup,
-                "FAV", since, until,
+                "FAV", since, until, number_format_id,
             )
             print_invoice_plan(issued_plan, "Vydané faktury")
             if apply:

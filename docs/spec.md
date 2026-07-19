@@ -194,8 +194,8 @@ Backup soubor je v `.gitignore` — spravuje ho uživatel sám, nikdy se necommi
 | `idfirmy` (FK → `aadresar.idfirmy`) | `subject_id` | Lookup: FlexiBee interní ID → Fakturoid ID vytvořené při importu kontaktů |
 | `varsym` | `variable_symbol` | |
 | `sumcelkem` | validace součtu | Křížová kontrola po importu |
-| `datuhr` (vyplněno = zaplaceno) | stav úhrady (endpoint/pole ověřit — Fakturoid má koncept "zaplaceno" na faktuře) | **Core mapping, ne edge case.** Bez tohohle budou všechny historické faktury ve Fakturoidu vypadat jako nezaplacené hned po importu |
-| `mena` + `sumcelkemmen` (cizoměnová částka) | `currency` | **Core mapping, ne edge case.** Default CZK, ale zahraniční faktury musí být namapované od začátku Fáze 3, ne dořešené až v polish |
+| `stavuhrk` (vyplněno = zaplaceno, hodnota pozorována: `stavUhr.uhrazenoRucne`) | stav úhrady (endpoint/pole ověřit — Fakturoid má koncept "zaplaceno" na faktuře) | **Core mapping, ne edge case.** Bez tohohle budou všechny historické faktury ve Fakturoidu vypadat jako nezaplacené hned po importu. Opraveno oproti dřívějšímu draftu — `datuhr` existuje taky (datum úhrady), ale `stavuhrk` je přímější signál "zaplaceno/nezaplaceno" |
+| `idmeny` (FK → `umeny.kod`) | `currency` | **Core mapping, ne edge case.** ~~`mena`~~ — tenhle sloupec v reálném schématu neexistuje, oprava oproti dřívějšímu draftu. Pozorováno v datech: 985× CZK, 64× EUR |
 | `modul` | rozhodnutí FAV/FAP | Filtr, ne přímé pole |
 | `idtypdokl` (FK → `dtypdokl`) | — | Rozlišuje fakturu / zálohu / ZDD / dobropis — ověřit, zda se má zálohová faktura migrovat jinak |
 | `storno` | — | Stornované doklady pravděpodobně přeskočit |

@@ -1,9 +1,9 @@
 # flexibee2fakturoid — Technická specifikace
 
-> Stav: v0.8 — Fáze 1–4 a rollback implementované, end-to-end otestované proti mock Fakturoid serveru,
-> proti reálné záloze, a teď i **živě proti reálnému Fakturoid trial účtu autora** (dry-run — OAuth2
-> autentizace, `GET` na subjects/invoices/expenses). Zbývá jediné: skutečný `POST` s historickým
-> číslem faktury (Q3), ten vyžaduje `--yes`.
+> Stav: v0.9 — Fáze 1–4 a rollback implementované, end-to-end otestované proti mock Fakturoid serveru,
+> proti reálné záloze, a **živě proti reálnému Fakturoid trial účtu autora včetně skutečného zápisu**
+> (74 kontaktů + 6 vydaných faktur za 2026, se zachovaným historickým číslováním). Q1–Q3, Q7, Q10
+> uzavřeny živým ověřením. Zbývá dotáhnout přijaté faktury (`--yes`) a historický backfill.
 > Nahrazuje artefakt v0.2, který předpokládal jiný formát zálohy (viz [Historie](#historie-verzí) níže).
 
 ## Publikum a rozsah
@@ -380,6 +380,10 @@ f2f migrate firma.winstrom-backup … --only received-invoices
 f2f migrate firma.winstrom-backup … --since 2026-01-01
 f2f migrate firma.winstrom-backup … --since 2025-01-01 --until 2026-01-01   # postupný backfill po letech
 
+# Vydané faktury s vlastní číselnou řadou — nutné, pokud má účet víc než jednu (viz Q3)
+# ID zjistíš přes devtools na formuláři nové faktury ve Fakturoid UI (<select name="invoice[number_format_id]">)
+f2f migrate firma.winstrom-backup … --only issued-invoices --since 2026-01-01 --number-format-id 1544448
+
 # Přepsání base URL Fakturoid API — použito testy (mock server), jinak vždy produkční API
 f2f migrate firma.winstrom-backup … --fakturoid-base-url http://127.0.0.1:8000
 
@@ -523,7 +527,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 |---|---|---|---|
 | Q1 | Přesná struktura zálohy — formát, tabulky, sloupce | `f2f inspect` | ✅ **Vyřešeno** — je to `pg_dump -Fc`, ne ZIP+XML. Klíčové tabulky zdokumentovány výše. |
 | Q2 | Fakturoid endpoint pro přijaté faktury — `inbox_invoices` nebo jiný? | Ověřeno proti dokumentaci i živě proti trial účtu autora (2026-07-19) | 🟢 **Vyřešeno.** Endpoint je `expenses`. `GET /accounts/{slug}/expenses.json` živě funguje (dry-run `--only received-invoices` proběhl bez chyby, 39 faktur za 2026 správně rozpoznáno). `POST` (vytvoření) zatím neověřen živě — dry-run nikdy nezapisuje, viz Q3. |
-| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | Skutečný `POST /invoices.json` proti živému účtu autora (2026-07-19) | 🔴 **Zodpovězeno: NE, ne bez dalšího kroku.** Reálný pokus o vytvoření faktury `VF1-0003/2026` skončil `422`: `{"errors":{"number":["není platná hodnota","Číslo neodpovídá formátu čísla v nastavení."]}}`. Historické číslo nesedí na výchozí `number_format` účtu. `GET /accounts/{slug}/number_formats.json` (i varianta s pomlčkou `number-formats.json`) vrací živě `404` — nejde to (aspoň takhle) zjistit/nastavit přes API, jen přes UI (Nastavení → Číselné řady). **Blokuje zachování číslování ze zadání** — nutné rozhodnutí uživatele, jak dál (viz text níže). |
+| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | Skutečný `POST /invoices.json` proti živému účtu autora, kompletně vyřešeno (2026-07-19) | 🟢 **Vyřešeno a funguje end-to-end.** Tři dílčí problémy, všechny opravené: **(1)** `/` v čísle není povolený znak (jen číslice, A-Z, pomlčka) — `_normalize_invoice_number()` nahrazuje `/` → `-`. **(2)** Účet může mít víc číselných řad; bez explicitního `number_format_id` se `number` validuje proti výchozí řadě, ne proti té zamýšlené — přidán `--number-format-id` (ID se zjišťuje ručně přes devtools na formuláři nové faktury ve Fakturoid UI, `GET` na number-formats/generator endpointy živě vrací `404`, i když jsou zdokumentované). **(3)** Faktury je potřeba vytvářet v chronologickém pořadí (`plan_invoices_migration` řadí podle `datvyst`). Po opravě všech tří: `f2f migrate --only issued-invoices --since 2026-01-01 --number-format-id 1544448 --yes` úspěšně vytvořilo všech 6 faktur (`VF1-0001-2026` … `VF1-0006-2026`) se správným odběratelem a částkou, ověřeno zpětně přes `GET /invoices.json`. |
 | Q4 | Přijaté faktury — kompletní data v záloze (dodavatel, položky, částky)? | Inspect reálné zálohy | ✅ **Vyřešeno** — 726 řádků FAP v `ddoklfak`, položky v `dpolfak` propojené přes `iddoklfak` |
 | Q5 | PDF přílohy k fakturám — zachovat nebo ignorovat? | Tabulky `wpriloha`/`wprilohadata` existují v záloze — obsahují binární data příloh | 🟢 **Rozhodnuto** — ano, zachovat, ale ex-post po dokončení core migrace (#9), ne mission-critical a ne blokující |
 | Q6 | Zálohové faktury (`idtypdokl` = ZÁLOHA/ZDD) a dobropisy — migrovat jako běžné faktury, jinak, nebo vynechat? | Konzultace s uživatelem, ověření Fakturoid podpory dobropisů | Nové |
@@ -585,7 +589,7 @@ matoucí/nedokumentované chování jejich API a UI:
   rozděleno na `Invoice` (vydané) a `Expense` (přijaté), `mapper.py`/`runner.py`/mock server
   odpovídajícím způsobem přepracované, 3 nové e2e testy pro platby. Nezbývá nic z dokumentace k
   dohledání — jediné, co chybí, je potvrzení proti živému volání skutečného sandbox účtu.
-- **v0.8** (tento dokument) — přidána podpora OAuth2 Client Credentials (`--fakturoid-client-id`/
+- **v0.8** — přidána podpora OAuth2 Client Credentials (`--fakturoid-client-id`/
   `--fakturoid-client-secret`, env `FAKTUROID_CLIENT_ID`/`FAKTUROID_SECRET`) — doporučený auth mód
   Fakturoidu pro tenhle typ nástroje. Živě otestováno proti reálnému trial účtu autora ("Na
   maximum", do 2026-08-05): token exchange nejdřív padal na `415`, příčina byla chybějící `Accept:
@@ -595,3 +599,13 @@ matoucí/nedokumentované chování jejich API a UI:
   dry-run (74 k vytvoření, 541 institucionálních přeskočeno — sedí s dřívějším odhadem) i dry-run
   obou typů faktur proti živému API. Q2 uzavřeno živě, Q3 čeká už jen na skutečný `POST` s
   historickým číslem (vyžaduje `--yes`, dry-run to z principu netestuje).
+- **v0.9** (tento dokument) — **první skutečný produkční zápis do reálného Fakturoid účtu**, s
+  explicitním potvrzením uživatele. `--only contacts --yes` úspěšně vytvořilo 74 kontaktů (ověřeno
+  jak přes API, tak — po chvilkovém zmatku s UI záložkou "Přehled", která bulk-importované kontakty
+  nezobrazuje, viz sekce Zpětná vazba pro Fakturoid — přes záložku "Všechny"). Vydané faktury za
+  2026 narazily na `422` kvůli třem samostatným problémům, všechny vyřešené a zdokumentované v Q3:
+  normalizace `/` → `-` v čísle, explicitní `--number-format-id` (účet má víc číselných řad),
+  chronologické řazení. Po opravě `--only issued-invoices --since 2026-01-01 --number-format-id
+  1544448 --yes` vytvořilo přesně 6 faktur (`VF1-0001-2026` … `VF1-0006-2026`) se správnými
+  odběrateli a částkami, ověřeno zpětně přes API. `_raise_for_status()` teď surfacuje tělo chybové
+  odpovědi — bez toho by se skutečná příčina `422` nikdy nenašla.

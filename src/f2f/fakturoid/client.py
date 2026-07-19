@@ -35,6 +35,19 @@ class RateLimitExceededError(FakturoidError):
     transient per-second throttling. See docs/spec.md#rate-limiting."""
 
 
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Like resp.raise_for_status(), but includes the response body in the
+    error — Fakturoid's 4xx bodies carry the actual validation reason
+    (e.g. "number does not match the number format"), which plain
+    raise_for_status() discards. Response bodies here are business-data
+    validation errors, never credentials, so this is safe to surface in
+    logs/tracebacks."""
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise FakturoidError(f"{exc}: {resp.text}") from exc
+
+
 class FakturoidClient:
     """Auth: either a static Personal Access Token (`token`), or OAuth2
     Client Credentials (`client_id` + `client_secret`) — Fakturoid's
@@ -113,7 +126,7 @@ class FakturoidClient:
             json={"grant_type": "client_credentials"},
             auth=(self._client_id, self._client_secret),
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()
         self._access_token = data["access_token"]
         expires_in = data.get("expires_in", 7200)
@@ -139,7 +152,7 @@ class FakturoidClient:
         page = 1
         while True:
             resp = await self._request("GET", path, params={"page": page})
-            resp.raise_for_status()
+            _raise_for_status(resp)
             batch = resp.json()
             if not batch:
                 break
@@ -154,7 +167,7 @@ class FakturoidClient:
 
     async def create_subject(self, payload: dict[str, Any]) -> dict[str, Any]:
         resp = await self._request("POST", f"/accounts/{self._slug}/subjects.json", json=payload)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def delete_subject(self, subject_id: int) -> None:
@@ -162,7 +175,7 @@ class FakturoidClient:
             "DELETE", f"/accounts/{self._slug}/subjects/{subject_id}.json"
         )
         if resp.status_code not in (204, 404):
-            resp.raise_for_status()
+            _raise_for_status(resp)
 
     # --- Issued invoices ---------------------------------------------------
 
@@ -171,7 +184,7 @@ class FakturoidClient:
 
     async def create_invoice(self, payload: dict[str, Any]) -> dict[str, Any]:
         resp = await self._request("POST", f"/accounts/{self._slug}/invoices.json", json=payload)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def delete_invoice(self, invoice_id: int) -> None:
@@ -179,13 +192,13 @@ class FakturoidClient:
             "DELETE", f"/accounts/{self._slug}/invoices/{invoice_id}.json"
         )
         if resp.status_code not in (204, 404):
-            resp.raise_for_status()
+            _raise_for_status(resp)
 
     async def create_invoice_payment(self, invoice_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         resp = await self._request(
             "POST", f"/accounts/{self._slug}/invoices/{invoice_id}/payments.json", json=payload
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     # --- Received invoices ("expenses" in Fakturoid's API — see
@@ -200,7 +213,7 @@ class FakturoidClient:
         resp = await self._request(
             "POST", f"/accounts/{self._slug}/expenses.json", json=payload
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     async def delete_expense(self, expense_id: int) -> None:
@@ -208,18 +221,18 @@ class FakturoidClient:
             "DELETE", f"/accounts/{self._slug}/expenses/{expense_id}.json"
         )
         if resp.status_code not in (204, 404):
-            resp.raise_for_status()
+            _raise_for_status(resp)
 
     async def create_expense_payment(self, expense_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         resp = await self._request(
             "POST", f"/accounts/{self._slug}/expenses/{expense_id}/payments.json", json=payload
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()
 
     # --- Number formats (Q3 — see docs/spec.md Open Questions) -------------
 
     async def list_number_formats(self) -> list[dict[str, Any]]:
         resp = await self._request("GET", f"/accounts/{self._slug}/number_formats.json")
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()

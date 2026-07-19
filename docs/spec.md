@@ -532,6 +532,28 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 | Q9 | Kódování `astaty.kod` — čisté ISO 3166-1 alpha-2, nebo FlexiBee specifický formát (pozorováno `XI` pro Severní Irsko)? | Projít číselník `astaty` v `f2f inspect` | Nové |
 | Q10 | OAuth2 Client Credentials (`POST /oauth/token`) vracel `415 Unsupported Media Type` na živém trial účtu autora, přestože tělo requestu přesně odpovídalo dokumentaci. | Živý test proti trial účtu autora | 🟢 **Vyřešeno** — příčina byla chybějící `Accept: application/json` hlavička na klientovi (httpx defaultně posílá `Accept: */*`). [Dokumentace](https://www.fakturoid.cz/api/v3#json) říká "Requests requesting a different type of response will receive 415" — to je o `Accept`, ne (jen) o `Content-Type`, jak jsme si mysleli. Po opravě token exchange i celý `f2f migrate --only contacts` dry-run proběhly úspěšně proti reálnému API. |
 
+## Zpětná vazba pro Fakturoid
+
+Zjištění z živého testování, která nejsou naším bugem, ale stojí za nahlášení Fakturoid podpoře —
+matoucí/nedokumentované chování jejich API a UI:
+
+1. **Chybová hláška `415 Unsupported Media Type` je zavádějící pro chybějící `Accept` hlavičku.**
+   Skutečná příčina (chybějící `Accept: application/json`, ne `Content-Type`) je zmíněná jen
+   nepřímo v obecné sekci `/api/v3#json` ("Requests requesting a different type of response will
+   receive 415"), ne přímo u `/oauth/token` dokumentace, kde by to čtenář čekal. Standardní HTTP
+   sémantika navíc je, že `415` je o *request* content-type, ne o *response* content negotiation
+   (to bývá `406 Not Acceptable`) — použití `415` pro tohle je nestandardní a matoucí. Stálo nás to
+   dost času najít, viz Q10 výše.
+2. **UI záložka "Přehled" v Kontaktech nezobrazuje hromadně naimportované kontakty.** Po úspěšném
+   API importu 74 kontaktů (potvrzeno přes `GET /subjects.json` — všech 74 skutečně existuje,
+   správný účet, správná firma) záložka "Přehled" v Kontaktech ukazovala prázdný onboarding stav
+   ("Ve vašem účtu se toho moc neděje" + výzva přidat/naimportovat kontakt), zatímco záložka
+   "Všechny" správně zobrazila všech 74. Pro uživatele, který právě dokončil import přes API, je
+   tohle silně matoucí — vypadá to jako by import selhal, i když neselhal. Pravděpodobně je
+   "Přehled" navázaný na nedávnou fakturační aktivitu, ne na existenci kontaktu, ale to by mělo být
+   z UI patrné (nebo by prázdný stav neměl tvrdit "toho moc neděje", když 74 kontaktů reálně
+   existuje).
+
 ## Historie verzí
 
 - **v0.1** — první návrh, počítal s FlexiBee REST API + Playwright browser automation.

@@ -4,10 +4,9 @@ docs/spec.md#fakturoid-import for why this is the primary auth mode."""
 
 from __future__ import annotations
 
-import httpx
 import pytest
 
-from f2f.fakturoid.client import FakturoidClient
+from f2f.fakturoid.client import FakturoidClient, FakturoidError
 from tests.conftest import MOCK_SLUG
 from tests.mock_fakturoid.server import running_mock_server
 
@@ -37,7 +36,7 @@ async def test_wrong_client_secret_is_rejected() -> None:
             client_secret="wrong-secret",
             base_url=server.base_url,
         ) as client:
-            with pytest.raises(httpx.HTTPStatusError):
+            with pytest.raises(FakturoidError):
                 await client.list_subjects()
 
 

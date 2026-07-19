@@ -21,7 +21,15 @@ def _client(server: MockFakturoidServer) -> FakturoidClient:
     return FakturoidClient(slug=MOCK_SLUG, token=MOCK_TOKEN, base_url=server.base_url)
 
 
-def _invoice(iddoklfak: int, kod: str, modul: str, datvyst: str, idfirmy: int = 1, storno: str = "f") -> FlexInvoice:
+def _invoice(
+    iddoklfak: int,
+    kod: str,
+    modul: str,
+    datvyst: str,
+    idfirmy: int = 1,
+    storno: str = "f",
+    stavuhrk: str | None = None,
+) -> FlexInvoice:
     return FlexInvoice(
         iddoklfak=iddoklfak,
         kod=kod,
@@ -30,6 +38,7 @@ def _invoice(iddoklfak: int, kod: str, modul: str, datvyst: str, idfirmy: int = 
         idfirmy=idfirmy,
         sumcelkem="1000.00",
         storno=storno,
+        stavuhrk=stavuhrk,
     )
 
 
@@ -111,7 +120,7 @@ async def test_invoice_missing_subject_is_skipped_with_warning(
     assert len(plan.to_skip_missing_subject) == 1
 
 
-async def test_received_invoice_goes_to_inbox_invoices_endpoint(
+async def test_received_invoice_goes_to_expenses_endpoint(
     mock_fakturoid: MockFakturoidServer,
 ) -> None:
     contact = FlexContact(idfirmy=1, kod="F1", nazev="Firma", ic="12345678")
@@ -126,7 +135,7 @@ async def test_received_invoice_goes_to_inbox_invoices_endpoint(
         created = await apply_invoice_plan(client, plan, run_log, "FAP")
 
     assert created == 1
-    assert len(mock_fakturoid.state.inbox_invoices) == 1
+    assert len(mock_fakturoid.state.expenses) == 1
     assert mock_fakturoid.state.invoices == {}
 
 
@@ -148,3 +157,53 @@ async def test_second_run_dedups_invoices_by_number(mock_fakturoid: MockFakturoi
 
     assert len(second_plan.to_create) == 0
     assert len(second_plan.to_skip_existing) == 1
+
+
+async def test_paid_issued_invoice_records_payment_via_separate_call(
+    mock_fakturoid: MockFakturoidServer,
+) -> None:
+    contact = FlexContact(idfirmy=1, kod="F1", nazev="Firma", ic="12345678")
+    invoice = _invoice(1, "F1", "FAV", "2024-01-01", idfirmy=1, stavuhrk="stavUhr.uhrazenoRucne")
+    async with _client(mock_fakturoid) as client:
+        subject = await _seed_subject(client, "12345678")
+        idfirmy_map = build_idfirmy_to_subject_id([contact], [subject])
+        plan = await build_invoice_plan(
+            client, [invoice], {}, idfirmy_map, {}, "FAV", since=None, until=None
+        )
+        await apply_invoice_plan(client, plan, RunLog.start(MOCK_SLUG), "FAV")
+
+    created_id = next(iter(mock_fakturoid.state.invoices))
+    # Payment is a separate call, not a field on the creation payload — see
+    # Invoice model docstring and docs/spec.md#fakturoid-import.
+    assert mock_fakturoid.state.invoice_payments[created_id] == [{"paid_on": "2024-01-01"}]
+
+
+async def test_unpaid_invoice_never_calls_payments_endpoint(
+    mock_fakturoid: MockFakturoidServer,
+) -> None:
+    contact = FlexContact(idfirmy=1, kod="F1", nazev="Firma", ic="12345678")
+    invoice = _invoice(1, "F1", "FAV", "2024-01-01", idfirmy=1, stavuhrk=None)
+    async with _client(mock_fakturoid) as client:
+        subject = await _seed_subject(client, "12345678")
+        idfirmy_map = build_idfirmy_to_subject_id([contact], [subject])
+        plan = await build_invoice_plan(
+            client, [invoice], {}, idfirmy_map, {}, "FAV", since=None, until=None
+        )
+        await apply_invoice_plan(client, plan, RunLog.start(MOCK_SLUG), "FAV")
+
+    assert mock_fakturoid.state.invoice_payments == {}
+
+
+async def test_paid_received_expense_records_payment(mock_fakturoid: MockFakturoidServer) -> None:
+    contact = FlexContact(idfirmy=1, kod="F1", nazev="Firma", ic="12345678")
+    invoice = _invoice(1, "F1", "FAP", "2024-01-01", idfirmy=1, stavuhrk="stavUhr.uhrazenoRucne")
+    async with _client(mock_fakturoid) as client:
+        subject = await _seed_subject(client, "12345678")
+        idfirmy_map = build_idfirmy_to_subject_id([contact], [subject])
+        plan = await build_invoice_plan(
+            client, [invoice], {}, idfirmy_map, {}, "FAP", since=None, until=None
+        )
+        await apply_invoice_plan(client, plan, RunLog.start(MOCK_SLUG), "FAP")
+
+    created_id = next(iter(mock_fakturoid.state.expenses))
+    assert mock_fakturoid.state.expense_payments[created_id] == [{"paid_on": "2024-01-01"}]

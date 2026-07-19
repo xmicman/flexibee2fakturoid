@@ -143,9 +143,7 @@ async def build_invoice_plan(
     since: date | None,
     until: date | None,
 ) -> InvoiceMigrationPlan:
-    existing = (
-        await client.list_invoices() if modul == "FAV" else await client.list_inbox_invoices()
-    )
+    existing = await client.list_invoices() if modul == "FAV" else await client.list_expenses()
     existing_numbers = {inv["number"] for inv in existing if inv.get("number")}
     return plan_invoices_migration(
         invoices,
@@ -153,6 +151,7 @@ async def build_invoice_plan(
         idfirmy_to_subject_id,
         currency_lookup,
         existing_numbers,
+        modul,
         since,
         until,
     )
@@ -161,17 +160,27 @@ async def build_invoice_plan(
 async def apply_invoice_plan(
     client: FakturoidClient, plan: InvoiceMigrationPlan, run_log: RunLog, modul: str
 ) -> int:
-    entity_type = "invoice" if modul == "FAV" else "inbox_invoice"
+    """Creates each invoice/expense, then — if the FlexiBee source was
+    marked paid (`stavuhrk` set) — records payment via a separate call.
+    Fakturoid has no `paid_on` field on document creation; see the
+    Invoice/Expense model docstrings and docs/spec.md#fakturoid-import.
+    """
+    entity_type = "invoice" if modul == "FAV" else "expense"
     created_count = 0
     for invoice, payload in plan.to_create:
         body = payload.model_dump(mode="json", exclude_none=True)
         created = (
-            await client.create_invoice(body)
-            if modul == "FAV"
-            else await client.create_inbox_invoice(body)
+            await client.create_invoice(body) if modul == "FAV" else await client.create_expense(body)
         )
         run_log.record(entity_type, created["id"], str(invoice.iddoklfak))
         created_count += 1
+
+        if invoice.is_paid:
+            payment_body = {"paid_on": (invoice.datuhr or invoice.datvyst).isoformat()}
+            if modul == "FAV":
+                await client.create_invoice_payment(created["id"], payment_body)
+            else:
+                await client.create_expense_payment(created["id"], payment_body)
     return created_count
 
 
@@ -189,8 +198,10 @@ def print_run_log_summary(run_log: RunLog, title: str) -> None:
 _DELETE_METHOD_BY_ENTITY_TYPE = {
     "subject": "delete_subject",
     "invoice": "delete_invoice",
-    "inbox_invoice": "delete_inbox_invoice",
+    "expense": "delete_expense",
 }
+# Deleting an invoice/expense is assumed to cascade-delete its payments —
+# rollback does not track/delete payments as a separate run_log entry.
 
 
 async def apply_rollback(client: FakturoidClient, run_log: RunLog) -> tuple[int, list[str]]:

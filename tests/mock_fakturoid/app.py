@@ -24,7 +24,9 @@ class MockState:
     def __init__(self) -> None:
         self.subjects: dict[int, dict[str, Any]] = {}
         self.invoices: dict[int, dict[str, Any]] = {}
-        self.inbox_invoices: dict[int, dict[str, Any]] = {}
+        self.expenses: dict[int, dict[str, Any]] = {}
+        self.invoice_payments: dict[int, list[dict[str, Any]]] = {}
+        self.expense_payments: dict[int, list[dict[str, Any]]] = {}
         self.sent_emails: list[int] = []
         self.request_count = 0
         self.rate_limit_every: int | None = None
@@ -116,27 +118,46 @@ def create_app(token: str = "test-token", rate_limit_every: int | None = None) -
         state.sent_emails.append(invoice_id)
         return jsonify({"status": "sent"}), 200
 
-    # --- Invoices (received / inbox) -------------------------------------
+    @app.post("/accounts/<slug>/invoices/<int:invoice_id>/payments.json")
+    def create_invoice_payment(slug: str, invoice_id: int) -> Any:
+        if invoice_id not in state.invoices:
+            return jsonify({"errors": {"invoice_id": ["does not exist"]}}), 422
+        payload = request.get_json(force=True) or {}
+        state.invoice_payments.setdefault(invoice_id, []).append(payload)
+        state.invoices[invoice_id]["paid_on"] = payload.get("paid_on")
+        return jsonify({"id": state.next_id(), **payload}), 201
 
-    @app.post("/accounts/<slug>/inbox_invoices.json")
-    def create_inbox_invoice(slug: str) -> Any:
+    # --- Expenses (received invoices — see docs/spec.md Open Question Q2,
+    # confirmed against https://www.fakturoid.cz/api/v3/expenses) ----------
+
+    @app.post("/accounts/<slug>/expenses.json")
+    def create_expense(slug: str) -> Any:
         payload = request.get_json(force=True) or {}
         error = _validate_invoice(payload, state)
         if error:
             return error
-        invoice_id = state.next_id()
-        record = {"id": invoice_id, **payload}
-        state.inbox_invoices[invoice_id] = record
+        expense_id = state.next_id()
+        record = {"id": expense_id, **payload}
+        state.expenses[expense_id] = record
         return jsonify(record), 201
 
-    @app.get("/accounts/<slug>/inbox_invoices.json")
-    def list_inbox_invoices(slug: str) -> Any:
-        return jsonify(_paginated(list(state.inbox_invoices.values())))
+    @app.get("/accounts/<slug>/expenses.json")
+    def list_expenses(slug: str) -> Any:
+        return jsonify(_paginated(list(state.expenses.values())))
 
-    @app.delete("/accounts/<slug>/inbox_invoices/<int:invoice_id>.json")
-    def delete_inbox_invoice(slug: str, invoice_id: int) -> Any:
-        state.inbox_invoices.pop(invoice_id, None)
+    @app.delete("/accounts/<slug>/expenses/<int:expense_id>.json")
+    def delete_expense(slug: str, expense_id: int) -> Any:
+        state.expenses.pop(expense_id, None)
         return "", 204
+
+    @app.post("/accounts/<slug>/expenses/<int:expense_id>/payments.json")
+    def create_expense_payment(slug: str, expense_id: int) -> Any:
+        if expense_id not in state.expenses:
+            return jsonify({"errors": {"expense_id": ["does not exist"]}}), 422
+        payload = request.get_json(force=True) or {}
+        state.expense_payments.setdefault(expense_id, []).append(payload)
+        state.expenses[expense_id]["paid_on"] = payload.get("paid_on")
+        return jsonify({"id": state.next_id(), **payload}), 201
 
     return app
 

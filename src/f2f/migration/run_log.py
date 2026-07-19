@@ -19,7 +19,7 @@ RUN_LOG_DIR = Path.home() / ".f2f" / "runs"
 
 @dataclass
 class CreatedRecord:
-    entity_type: str  # "subject" | "invoice" | "inbox_invoice"
+    entity_type: str  # "subject" | "invoice" | "expense"
     fakturoid_id: int
     flexibee_source_id: str
 

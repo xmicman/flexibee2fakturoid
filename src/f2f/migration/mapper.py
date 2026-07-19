@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from f2f.fakturoid.models import Invoice, InvoiceLine, Subject
+from f2f.fakturoid.models import Expense, Invoice, InvoiceLine, Subject
 from f2f.flexibee.models import FlexContact, FlexInvoice, FlexInvoiceLine
 
 # typvztahuk values observed in real data for institutional contacts
@@ -102,29 +102,55 @@ def map_invoice_line(line: FlexInvoiceLine) -> InvoiceLine:
     )
 
 
-def map_invoice(
+def map_issued_invoice(
     invoice: FlexInvoice,
     lines: list[FlexInvoiceLine],
     subject_id: int,
     currency_lookup: dict[str, str],
 ) -> Invoice:
+    """FAV -> POST /invoices.json payload. Payment status is NOT included
+    here — Fakturoid marks a document paid via a separate payments call,
+    see apply_invoice_plan. `due` is a day-count, not a date — see
+    Invoice model docstring."""
     currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
+    due = (invoice.datsplat - invoice.datvyst).days if invoice.datsplat else None
     return Invoice(
         number=invoice.kod,
         subject_id=subject_id,
         issued_on=invoice.datvyst,
-        due_on=invoice.datsplat,
+        due=due,
         taxable_fulfillment_due=invoice.duzppuv,
         variable_symbol=invoice.varsym,
         currency=currency,
-        paid_on=(invoice.datuhr or invoice.datvyst) if invoice.is_paid else None,
+        lines=[map_invoice_line(line) for line in lines],
+    )
+
+
+def map_received_expense(
+    invoice: FlexInvoice,
+    lines: list[FlexInvoiceLine],
+    subject_id: int,
+    currency_lookup: dict[str, str],
+) -> Expense:
+    """FAP -> POST /expenses.json payload. `received_on` has no distinct
+    source field in FlexiBee's ddoklfak — defaults to `datvyst` (issue
+    date) as the best available approximation."""
+    currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
+    return Expense(
+        number=invoice.kod,
+        subject_id=subject_id,
+        issued_on=invoice.datvyst,
+        received_on=invoice.datvyst,
+        due_on=invoice.datsplat,
+        variable_symbol=invoice.varsym,
+        currency=currency,
         lines=[map_invoice_line(line) for line in lines],
     )
 
 
 @dataclass
 class InvoiceMigrationPlan:
-    to_create: list[tuple[FlexInvoice, Invoice]] = field(default_factory=list)
+    to_create: list[tuple[FlexInvoice, Invoice | Expense]] = field(default_factory=list)
     to_skip_existing: list[FlexInvoice] = field(default_factory=list)
     to_skip_storno: list[FlexInvoice] = field(default_factory=list)
     to_skip_missing_subject: list[FlexInvoice] = field(default_factory=list)
@@ -136,10 +162,12 @@ def plan_invoices_migration(
     idfirmy_to_subject_id: dict[int, int],
     currency_lookup: dict[str, str],
     existing_numbers: set[str],
+    modul: str,
     since: date | None = None,
     until: date | None = None,
 ) -> InvoiceMigrationPlan:
-    """Decide what to create/skip for issued or received invoices.
+    """Decide what to create/skip for issued (modul='FAV') or received
+    (modul='FAP') invoices.
 
     `since`/`until` scope the run to a date window on `datvyst` (see
     docs/spec.md#cutover-strategie-postupný-import) — invoices outside the
@@ -150,6 +178,7 @@ def plan_invoices_migration(
     by the caller from FlexiBee contacts + a cached Fakturoid subjects
     list), not a per-invoice API call — see docs/spec.md#idempotence.
     """
+    map_fn = map_issued_invoice if modul == "FAV" else map_received_expense
     plan = InvoiceMigrationPlan()
     seen_in_this_run: set[str] = set()
     for invoice in invoices:
@@ -175,5 +204,5 @@ def plan_invoices_migration(
 
         seen_in_this_run.add(invoice.kod)
         lines = lines_by_invoice.get(invoice.iddoklfak, [])
-        plan.to_create.append((invoice, map_invoice(invoice, lines, subject_id, currency_lookup)))
+        plan.to_create.append((invoice, map_fn(invoice, lines, subject_id, currency_lookup)))
     return plan

@@ -1,8 +1,10 @@
 # flexibee2fakturoid — Technická specifikace
 
-> Stav: v0.6 — Fáze 1–4 a rollback implementované a end-to-end otestované proti mock Fakturoid serveru
-> i proti reálné záloze (dry-run/mock, nikdy produkční účet). Před prvním ostrým `--yes` během zbývá
-> ověřit Q2/Q3 proti reálnému Fakturoid API — viz Open Questions.
+> Stav: v0.7 — Fáze 1–4 a rollback implementované a end-to-end otestované proti mock Fakturoid serveru
+> i proti reálné záloze. Q2 (endpoint `expenses`) a Q3 (číslování) ověřeny proti oficiální Fakturoid
+> API dokumentaci — kód opraven podle skutečného API tvaru (mj. platby jsou samostatný endpoint, ne
+> pole na faktuře). **Zbývá jediné:** potvrdit proti živému volání reálného Fakturoid sandboxu, ne
+> jen proti dokumentaci — viz Open Questions Q2/Q3.
 > Nahrazuje artefakt v0.2, který předpokládal jiný formát zálohy (viz [Historie](#historie-verzí) níže).
 
 ## Publikum a rozsah
@@ -192,19 +194,25 @@ Backup soubor je v `.gitignore` — spravuje ho uživatel sám, nikdy se necommi
 | `idfastatu` (FK → `astaty.kod`) | `country` | Ověřit soulad s ISO 3166-1 alpha-2 |
 | `typvztahuk` | `type` | Hodnoty pozorované v datech: `typVztahu.odberatel` (customer), `typVztahu.dodavatel` (supplier), `typVztahu.odberDodav` (oboje), plus institucionální typy (`typVztahu.zdravotka`, `typVztahu.socialka`, `typVztahu.financniUrad`) — ty pravděpodobně vynechat z migrace (viz Open Questions) |
 
-### Faktury (`ddoklfak` → Fakturoid `invoices` / `inbox_invoices`)
+### Faktury (`ddoklfak` → Fakturoid `invoices` / `expenses`)
 
-| FlexiBee sloupec | Fakturoid JSON | Poznámka |
-|---|---|---|
-| `kod` | `number` | Zachovat původní číslo (např. `VF1-0009/2024`) |
-| `datvyst` | `issued_on` | |
-| `datsplat` | `due_on` | |
-| `duzppuv` | `taxable_fulfillment_due` | DUZP |
-| `idfirmy` (FK → `aadresar.idfirmy`) | `subject_id` | Lookup: FlexiBee interní ID → Fakturoid ID vytvořené při importu kontaktů |
-| `varsym` | `variable_symbol` | |
-| `sumcelkem` | validace součtu | Křížová kontrola po importu |
-| `stavuhrk` (vyplněno = zaplaceno, hodnota pozorována: `stavUhr.uhrazenoRucne`) | stav úhrady (endpoint/pole ověřit — Fakturoid má koncept "zaplaceno" na faktuře) | **Core mapping, ne edge case.** Bez tohohle budou všechny historické faktury ve Fakturoidu vypadat jako nezaplacené hned po importu. Opraveno oproti dřívějšímu draftu — `datuhr` existuje taky (datum úhrady), ale `stavuhrk` je přímější signál "zaplaceno/nezaplaceno" |
-| `idmeny` (FK → `umeny.kod`) | `currency` | **Core mapping, ne edge case.** ~~`mena`~~ — tenhle sloupec v reálném schématu neexistuje, oprava oproti dřívějšímu draftu. Pozorováno v datech: 985× CZK, 64× EUR |
+> **Vydané a přijaté faktury mají ve Fakturoid API různý tvar payloadu** — potvrzeno proti oficiální
+> dokumentaci (https://www.fakturoid.cz/api/v3/invoices, https://www.fakturoid.cz/api/v3/expenses,
+> 2026-07-19). Endpoint pro přijaté je `expenses`, ne `inbox_invoices` jak předpokládal dřívější draft
+> (ten endpoint neexistuje). Vydané faktury používají `due` (počet dní splatnosti, integer), expenses
+> používají `due_on` (přímo datum) — nejde o stejné pole s jiným jménem.
+
+| FlexiBee sloupec | Fakturoid JSON (`invoices`, FAV) | Fakturoid JSON (`expenses`, FAP) | Poznámka |
+|---|---|---|---|
+| `kod` | `number` | `number` | Zachovat původní číslo (např. `VF1-0009/2024`). U `invoices` musí odpovídat nastavenému `number_format`, jinak API vrací `422` — u `expenses` dokumentace toto omezení nezmiňuje. Viz Q3. |
+| `datvyst` | `issued_on` | `issued_on` a `received_on` (FlexiBee nemá samostatné datum přijetí, použito totéž) | |
+| `datsplat` | `due` — **počet dní** od `issued_on`, ne datum (mapper počítá `(datsplat - datvyst).days`) | `due_on` — přímo datum | Asymetrie mezi endpointy, viz výše |
+| `duzppuv` | `taxable_fulfillment_due` | — (pole u expenses nepotvrzeno) | DUZP |
+| `idfirmy` (FK → `aadresar.idfirmy`) | `subject_id` | `subject_id` | Lookup: FlexiBee interní ID → Fakturoid ID vytvořené při importu kontaktů |
+| `varsym` | `variable_symbol` | `variable_symbol` | |
+| `sumcelkem` | validace součtu | validace součtu | Křížová kontrola po importu |
+| `stavuhrk` (vyplněno = zaplaceno, hodnota pozorována: `stavUhr.uhrazenoRucne`) | **není pole na faktuře** — samostatný `POST .../invoices/{id}/payments.json` s `paid_on` po vytvoření | **není pole na faktuře** — `POST .../expenses/{id}/payments.json` | **Core mapping, ne edge case**, ale ne field mapping — je to druhé volání API. Opraveno oproti dřívějšímu draftu, který mylně předpokládal `paid_on` přímo na `POST` payloadu. `datuhr` (datum úhrady) se použije jako `paid_on`, fallback na `datvyst` |
+| `idmeny` (FK → `umeny.kod`) | `currency` | `currency` | Pozorováno v datech: 985× CZK, 64× EUR |
 | `modul` | rozhodnutí FAV/FAP | Filtr, ne přímé pole |
 | `idtypdokl` (FK → `dtypdokl`) | — | Rozlišuje fakturu / zálohu / ZDD / dobropis — ověřit, zda se má zálohová faktura migrovat jinak |
 | `storno` | — | Stornované doklady pravděpodobně přeskočit |
@@ -232,8 +240,8 @@ Fakturoid REST API v3. Autentizace: **Personal Access Token (PAT)** — uživate
 ### Pořadí importu
 
 1. Kontakty → `POST /accounts/{slug}/subjects.json`
-2. Vydané faktury → `POST /accounts/{slug}/invoices.json`
-3. Přijaté faktury → `POST /accounts/{slug}/inbox_invoices.json` (ověřit — viz Open Questions)
+2. Vydané faktury → `POST /accounts/{slug}/invoices.json`, u zaplacených navíc `POST .../invoices/{id}/payments.json`
+3. Přijaté faktury → `POST /accounts/{slug}/expenses.json` (potvrzeno proti dokumentaci, viz Q2), u zaplacených navíc `POST .../expenses/{id}/payments.json`
 
 ### Idempotence
 
@@ -253,9 +261,14 @@ Reálná záloha obsahuje ~74 skutečných kontaktů (viz Field Mapping — 541 
 vestavěné referenční číselníky, vynechané z migrace) + 323 vydaných + 726 přijatých faktur =
 **~1123 záznamů k vytvoření.** I s dedup přes lokální index (pár desítek `GET` na stažení seznamů, ne
 stovky) se samotné `POST` požadavky na vytvoření pohybují blízko měsíčního limitu volného tarifu.
-Číselné položky faktur (`dpolfak`) jdou většinou v těle `POST` na fakturu, ne jako samostatný request
-— ověřit v Fakturoid API docs, jestli náhodou nejde o zvláštní endpoint per položka (to by rozpočet
-výrazně prodražilo).
+Položky faktur (`dpolfak`) jdou v těle `POST` na fakturu (potvrzeno proti dokumentaci — `lines` je
+pole v request body, ne samostatný endpoint).
+
+**Zaplacené faktury stojí navíc jeden request.** Stav úhrady se nenastavuje na samotné faktuře, ale
+přes samostatné volání `POST .../invoices/{id}/payments.json` (viz Field Mapping výše) — u
+zaplacené faktury je to tedy `POST` na vytvoření + `POST` na platbu = 2 requesty místo 1. V reálné
+záloze je zaplaceno 552 z 1049 faktur (~53 %), takže reálný odhad je blíž **~1400–1500 requestů**
+pro plnou historii, ne ~1123 — o něco těsnější k měsíčnímu limitu, než původní odhad naznačoval.
 
 Praktické důsledky:
 - **Naivní "GET před každým POST" dedup je mimo rozpočet** — proto cachovaný index výše, ne volitelná optimalizace.
@@ -417,7 +430,7 @@ vlastní mock server, ne mockování na úrovni Python funkcí:
   [oficiální dokumentace](https://www.fakturoid.cz/api/v3):
   - `POST /accounts/{slug}/subjects.json` + `GET .../subjects.json?registration_no=…` (dedup lookup)
   - `POST /accounts/{slug}/invoices.json` + `GET .../invoices.json?number=…`
-  - `POST /accounts/{slug}/inbox_invoices.json` (endpoint potvrdit dle Q2)
+  - `POST /accounts/{slug}/expenses.json` (potvrzeno dle Q2), `POST .../invoices/{id}/payments.json` a `.../expenses/{id}/payments.json`
   - Autentizace: kontrola Bearer tokenu, `401` při chybě
   - Validace povinných polí — `422` s tělem podobným reálné Fakturoid chybové odpovědi
   - Simulace `429 Too Many Requests` (např. každý N-tý request), aby se ověřila retry logika klienta
@@ -441,9 +454,11 @@ vlastní mock server, ne mockování na úrovni Python funkcí:
 ### Co mock nenahrazuje
 
 Mock je zjednodušená implementace — nezachytí každou libovolnost reálného Fakturoid API (limity,
-edge cases validace, chování `inbox_invoices`). Před prvním ostrým (produkčním) během proto zůstává
-**jeden ruční** ověřovací běh proti reálnému Fakturoid sandbox účtu — mimo automatizované testy,
-dělá ho člověk.
+edge cases validace, přesné chování `number_format` u `invoices`). Před prvním ostrým (produkčním)
+během proto zůstává **jeden ruční** ověřovací běh proti reálnému Fakturoid sandbox účtu — mimo
+automatizované testy, dělá ho člověk. Endpointy a tvar payloadu jsou ověřené proti veřejné API
+dokumentaci (viz Field Mapping výše a Open Questions Q2/Q3), ne proti živému volání — to je jediná
+věc, která zbývá k opravdovému ověření.
 
 <a id="rollback--failure-recovery"></a>
 ## Rollback & Failure Recovery
@@ -495,7 +510,7 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 | 1 | Backup parser + inspect | `pyproject.toml`, CLI skeleton, `pgdumplib` wrapper nad klíčovými tabulkami. Výstup: `f2f inspect firma.winstrom-backup` zobrazí počty entit a vzorový záznam každého typu. |
 | 2 | Kontakty → Fakturoid | Pydantic modely, mapper, httpx klient, import s deduplikací přes IČO. Dry-run výstup v tabulce. |
 | 3 | Vydané faktury | Parser `ddoklfak`/`dpolfak` (modul=FAV), mapper, lookup kontaktů, `--since`/`--until` filtr, import. Zachování číslování, stav úhrady, měna, validace součtů. První ostrý běh omezen na aktuální rok (viz [Cutover strategie](#cutover-strategie-postupný-import)), historie doimportována postupně později. |
-| 4 | Přijaté faktury | Totéž pro modul=FAP, import přes `inbox_invoices` (ověřit endpoint). Stejný `--since`/`--until` cutover přístup jako Fáze 3. |
+| 4 | Přijaté faktury | Totéž pro modul=FAP, import přes `expenses` (potvrzeno, viz Q2). Stejný `--since`/`--until` cutover přístup jako Fáze 3. |
 | 5 | Polish + wrap-up | Edge cases (různé DPH sazby, kontakty bez IČO, storno doklady, zálohové faktury), unit testy, README. Měna a stav úhrady jsou core mapping od Fáze 3, ne edge case zde. Kód zůstává veřejný na GitHubu jako inspirace, ne jako udržovaný OSS projekt — bez ambice podporovat cizí FlexiBee instalace (viz [Publikum a rozsah](#publikum-a-rozsah)). |
 | — | PDF přílohy faktur (#9) | Ex-post, nezávisle na ostatních fázích — provede se až po dokončení core migrace (cutover + historický backfill, #8). Ne mission-critical, nemá číslo fáze, protože neblokuje ani není blokováno ničím výše. |
 
@@ -504,8 +519,8 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 | # | Otázka | Jak ověřit | Stav |
 |---|---|---|---|
 | Q1 | Přesná struktura zálohy — formát, tabulky, sloupce | `f2f inspect` | ✅ **Vyřešeno** — je to `pg_dump -Fc`, ne ZIP+XML. Klíčové tabulky zdokumentovány výše. |
-| Q2 | Fakturoid endpoint pro přijaté faktury — `inbox_invoices` nebo jiný? | Fakturoid API docs / sandbox test | Otevřeno |
-| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | `GET /accounts/{slug}/number_formats.json` vrací seznam číselných řad s `id`, který se používá při tvorbě dokladu — potvrzuje, že *vlastní řadu* si lze zvolit/vytvořit. Neověřeno: jde nastavit i konkrétní historické `number` přímo na jednom dokladu (mimo automatickou řadu), nebo číselná řada jen určuje vzor pro *budoucí* automatické číslování? Rozhodující test před Fází 3. | 🟡 Částečně objasněno |
+| Q2 | Fakturoid endpoint pro přijaté faktury — `inbox_invoices` nebo jiný? | Ověřeno proti [oficiální dokumentaci](https://www.fakturoid.cz/api/v3/expenses) (2026-07-19, dva nezávislé fetch průchody se shodují) | 🟢 **Vyřešeno proti dokumentaci** — endpoint je `expenses` (`POST/GET /accounts/{slug}/expenses.json`), `inbox_invoices` neexistuje. Implementováno v `client.py`/mapperu. **Zbývá:** potvrdit proti živému volání (dokumentace ≠ garance chování), viz poznámka níže. |
+| Q3 | Číselné řady ve Fakturoidu — lze importovat vlastní číslo faktury z FlexiBee? | Ověřeno proti [dokumentaci invoices](https://www.fakturoid.cz/api/v3/invoices) a [expenses](https://www.fakturoid.cz/api/v3/expenses) (2026-07-19) | 🟢 **Vyřešeno proti dokumentaci, s výhradou** — `number` je přímo zapisovatelné pole na obou endpointech. U `invoices` (vydané) ale musí odpovídat nastavenému `number_format`, jinak `422` s chybou "The number does not match the number format in the settings" — u historických čísel jako `VF1-0009/2024` to může selhat, pokud se nenakonfiguruje odpovídající číselná řada předem. U `expenses` (přijaté) dokumentace toto omezení nezmiňuje vůbec — pravděpodobně bez constraint. **Zbývá ověřit na malé letošní dávce (6 vydaných faktur) proti reálnému sandboxu**, jestli `number_format` u účtu autora historická čísla propustí, nebo je potřeba číselnou řadu nejdřív založit/upravit. |
 | Q4 | Přijaté faktury — kompletní data v záloze (dodavatel, položky, částky)? | Inspect reálné zálohy | ✅ **Vyřešeno** — 726 řádků FAP v `ddoklfak`, položky v `dpolfak` propojené přes `iddoklfak` |
 | Q5 | PDF přílohy k fakturám — zachovat nebo ignorovat? | Tabulky `wpriloha`/`wprilohadata` existují v záloze — obsahují binární data příloh | 🟢 **Rozhodnuto** — ano, zachovat, ale ex-post po dokončení core migrace (#9), ne mission-critical a ne blokující |
 | Q6 | Zálohové faktury (`idtypdokl` = ZÁLOHA/ZDD) a dobropisy — migrovat jako běžné faktury, jinak, nebo vynechat? | Konzultace s uživatelem, ověření Fakturoid podpory dobropisů | Nové |
@@ -530,9 +545,17 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
   doimportuje postupně později. Kontakty zůstávají plný import (74 skutečných obchodních kontaktů,
   nezávisle na období faktur — z 615 řádků v `aadresar` jich 541 jsou vestavěné číselníky FlexiBee,
   vynechané by default, viz Q7).
-- **v0.6** (tento dokument) — Fáze 1–4 a rollback implementované (`f2f inspect`/`migrate`/`rollback`),
+- **v0.6** — Fáze 1–4 a rollback implementované (`f2f inspect`/`migrate`/`rollback`),
   end-to-end otestované proti mock Fakturoid serveru i proti reálné záloze. Reálné testování odhalilo
   a opravilo: `dpolfak.nazev` může být `NULL` (mapper má fallback), `--only`/`--since`/`--until`
   fungují přesně dle plánu (letošní dávka: 6 vydaných + 39 přijatých, sedí s dřívějším odhadem).
   Q2 a Q3 zůstávají neověřené proti živému Fakturoid API — implementováno podle nejlepšího odhadu,
   nutno ověřit na sandboxu před prvním produkčním `--yes` během.
+- **v0.7** (tento dokument) — Q2 a Q3 ověřeny proti oficiální Fakturoid API dokumentaci (dva nezávislé
+  fetch průchody, konzistentní výsledek). Zásadní opravy: endpoint pro přijaté faktury je `expenses`,
+  ne `inbox_invoices` (ten neexistuje); stav úhrady se nenastavuje na faktuře, ale přes samostatný
+  `POST .../{id}/payments.json` po vytvoření; vydané faktury používají `due` (počet dní) místo
+  `due_on` (datum), expenses naopak `due_on` — asymetrie mezi endpointy. `fakturoid/models.py`
+  rozděleno na `Invoice` (vydané) a `Expense` (přijaté), `mapper.py`/`runner.py`/mock server
+  odpovídajícím způsobem přepracované, 3 nové e2e testy pro platby. Nezbývá nic z dokumentace k
+  dohledání — jediné, co chybí, je potvrzení proti živému volání skutečného sandbox účtu.

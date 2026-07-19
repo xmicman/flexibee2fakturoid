@@ -126,24 +126,41 @@ class FakturoidClient:
         if resp.status_code not in (204, 404):
             resp.raise_for_status()
 
-    # --- Received invoices (inbox) -----------------------------------------
-
-    async def list_inbox_invoices(self) -> list[dict[str, Any]]:
-        return await self._list_all(f"/accounts/{self._slug}/inbox_invoices.json")
-
-    async def create_inbox_invoice(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def create_invoice_payment(self, invoice_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         resp = await self._request(
-            "POST", f"/accounts/{self._slug}/inbox_invoices.json", json=payload
+            "POST", f"/accounts/{self._slug}/invoices/{invoice_id}/payments.json", json=payload
         )
         resp.raise_for_status()
         return resp.json()
 
-    async def delete_inbox_invoice(self, invoice_id: int) -> None:
+    # --- Received invoices ("expenses" in Fakturoid's API — see
+    # docs/spec.md Open Question Q2. Earlier drafts guessed
+    # "inbox_invoices", which does not exist; confirmed against
+    # https://www.fakturoid.cz/api/v3/expenses.) ----------------------------
+
+    async def list_expenses(self) -> list[dict[str, Any]]:
+        return await self._list_all(f"/accounts/{self._slug}/expenses.json")
+
+    async def create_expense(self, payload: dict[str, Any]) -> dict[str, Any]:
         resp = await self._request(
-            "DELETE", f"/accounts/{self._slug}/inbox_invoices/{invoice_id}.json"
+            "POST", f"/accounts/{self._slug}/expenses.json", json=payload
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def delete_expense(self, expense_id: int) -> None:
+        resp = await self._request(
+            "DELETE", f"/accounts/{self._slug}/expenses/{expense_id}.json"
         )
         if resp.status_code not in (204, 404):
             resp.raise_for_status()
+
+    async def create_expense_payment(self, expense_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        resp = await self._request(
+            "POST", f"/accounts/{self._slug}/expenses/{expense_id}/payments.json", json=payload
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     # --- Number formats (Q3 — see docs/spec.md Open Questions) -------------
 

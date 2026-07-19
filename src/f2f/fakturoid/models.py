@@ -28,22 +28,54 @@ class InvoiceLine(BaseModel):
 
 
 class Invoice(BaseModel):
-    """Payload shape for POST .../invoices.json or .../inbox_invoices.json.
+    """Payload shape for POST /accounts/{slug}/invoices.json (issued invoices).
 
-    `number` and `paid_on` are best-effort — see docs/spec.md Open
-    Questions Q3 (whether a literal historical invoice number is
-    settable) and the payment-status note in Field Mapping. Verify
-    against a real Fakturoid sandbox account before the first
-    production run, ideally on the small current-year cutover batch
-    (see docs/spec.md#cutover-strategie-postupný-import).
+    Verified against https://www.fakturoid.cz/api/v3/invoices (2026-07-19).
+    `number` is settable, but must match the account's configured
+    `number_format` or the API rejects it with "The number does not match
+    the number format in the settings" — see docs/spec.md Open Question Q3.
+    Payment status is NOT a field here — Fakturoid marks a document paid via
+    a separate `POST .../invoices/{id}/payments.json` call, done by the
+    caller after creation (see FakturoidClient.create_invoice_payment and
+    migration.runner.apply_invoice_plan).
+
+    `due` is the number of days until the invoice is overdue (relative to
+    `issued_on`), not an absolute date — the API's response has a computed
+    `due_on`, but create only accepts `due`.
     """
 
     number: str
     subject_id: int
     issued_on: date
-    due_on: date | None = None
+    due: int | None = None
     taxable_fulfillment_due: date | None = None
     variable_symbol: str | None = None
     currency: str | None = None
-    paid_on: date | None = None
     lines: list[InvoiceLine] = []
+
+
+class Expense(BaseModel):
+    """Payload shape for POST /accounts/{slug}/expenses.json (received invoices).
+
+    Verified against https://www.fakturoid.cz/api/v3/expenses (2026-07-19).
+    Unlike Invoice, `due_on` here IS an absolute date, and the docs don't
+    mention a number_format constraint on `number` for expenses. Payment
+    status is likewise a separate `POST .../expenses/{id}/payments.json`
+    call, not a field here.
+    """
+
+    number: str
+    subject_id: int
+    issued_on: date
+    received_on: date | None = None
+    due_on: date | None = None
+    variable_symbol: str | None = None
+    currency: str | None = None
+    lines: list[InvoiceLine] = []
+
+
+class Payment(BaseModel):
+    """Payload shape for POST .../invoices/{id}/payments.json or
+    .../expenses/{id}/payments.json — how a document gets marked paid."""
+
+    paid_on: date

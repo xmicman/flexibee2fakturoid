@@ -43,7 +43,7 @@ class FlexInvoiceLine(BaseModel):
     """A row from `dpolfak` — invoice line items."""
 
     iddoklfak: int
-    nazev: str
+    nazev: str | None = None  # observed NULL in real data — see mapper for fallback
     mnozmj: Decimal
     cenamj: Decimal
     szbdph: Decimal
@@ -76,6 +76,7 @@ class FlexInvoice(BaseModel):
     datvyst: date
     datsplat: date | None = None
     duzppuv: date | None = None
+    datuhr: date | None = None
     idfirmy: int | None = None
     varsym: str | None = None
     sumcelkem: Decimal
@@ -98,7 +99,7 @@ class FlexInvoice(BaseModel):
             return value
         return value == "t"
 
-    @field_validator("datvyst", "datsplat", "duzppuv", mode="before")
+    @field_validator("datvyst", "datsplat", "duzppuv", "datuhr", mode="before")
     @classmethod
     def _to_date(cls, value: Any) -> Any:
         if value in (None, ""):

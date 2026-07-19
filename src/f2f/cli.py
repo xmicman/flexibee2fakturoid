@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from pgdumplib.dump import Dump
 from rich.console import Console
 from rich.table import Table
 
@@ -13,8 +15,22 @@ from f2f.fakturoid.client import DEFAULT_BASE_URL, FakturoidClient
 from f2f.flexibee import backup
 from f2f.flexibee.models import FlexContact, FlexInvoice
 from f2f.migration.run_log import RunLog
-from f2f.migration.runner import apply_contact_plan, build_contact_plan, load_country_lookup, print_contact_plan
+from f2f.migration.runner import (
+    apply_contact_plan,
+    apply_invoice_plan,
+    build_contact_plan,
+    build_idfirmy_to_subject_id,
+    build_invoice_plan,
+    load_country_lookup,
+    load_currency_lookup,
+    load_invoice_lines,
+    load_invoices,
+    print_contact_plan,
+    print_invoice_plan,
+)
 from f2f.migration.runner import load_contacts as load_flex_contacts
+
+ONLY_CHOICES = ("contacts", "issued-invoices", "received-invoices")
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -65,6 +81,16 @@ def _resolve_token(fakturoid_token: str | None) -> str:
     return typer.prompt("Fakturoid token", hide_input=True)
 
 
+def _parse_date(value: str | None, option_name: str) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        console.print(f"[red]{option_name}[/red] musí být ve formátu YYYY-MM-DD, dostal jsem {value!r}")
+        raise typer.Exit(code=1) from exc
+
+
 @app.command()
 def migrate(
     backup_path: Annotated[
@@ -84,7 +110,16 @@ def migrate(
         ),
     ] = DEFAULT_BASE_URL,
     only: Annotated[
-        str | None, typer.Option("--only", help="contacts (zatím jediná implementovaná entita)")
+        str | None,
+        typer.Option("--only", help="contacts | issued-invoices | received-invoices. Bez zadání: všechno."),
+    ] = None,
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="Faktury s datvyst >= tomuto datu (YYYY-MM-DD). Netýká se kontaktů."),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option("--until", help="Faktury s datvyst < tomuto datu (YYYY-MM-DD). Netýká se kontaktů."),
     ] = None,
     include_institutional_contacts: Annotated[
         bool,
@@ -98,50 +133,93 @@ def migrate(
     ] = False,
 ) -> None:
     """Migruj data ze zálohy do Fakturoidu. Bez --yes vždy jen dry-run report."""
-    if only is not None and only != "contacts":
-        console.print(f"[red]--only {only} zatím není implementováno.[/red] Podporováno: contacts")
+    if only is not None and only not in ONLY_CHOICES:
+        console.print(f"[red]--only {only} není platná hodnota.[/red] Podporováno: {', '.join(ONLY_CHOICES)}")
         raise typer.Exit(code=1)
 
+    since_date = _parse_date(since, "--since")
+    until_date = _parse_date(until, "--until")
     token = _resolve_token(fakturoid_token)
     dump = backup.load(backup_path)
-    contacts = load_flex_contacts(dump)
-    country_lookup = load_country_lookup(dump)
 
     asyncio.run(
-        _migrate_contacts_async(
-            contacts=contacts,
-            country_lookup=country_lookup,
+        _migrate_async(
+            dump=dump,
             slug=fakturoid_slug,
             token=token,
             base_url=fakturoid_base_url,
+            only=only,
+            since=since_date,
+            until=until_date,
             include_institutional=include_institutional_contacts,
             apply=yes,
         )
     )
 
 
-async def _migrate_contacts_async(
-    contacts: list[FlexContact],
-    country_lookup: dict[str, str],
+async def _migrate_async(
+    dump: Dump,
     slug: str,
     token: str,
     base_url: str,
+    only: str | None,
+    since: date | None,
+    until: date | None,
     include_institutional: bool,
     apply: bool,
 ) -> None:
+    do_contacts = only in (None, "contacts")
+    do_issued = only in (None, "issued-invoices")
+    do_received = only in (None, "received-invoices")
+
+    run_log = RunLog.start(slug) if apply else None
+    total_created = 0
+
     async with FakturoidClient(slug=slug, token=token, base_url=base_url) as client:
-        plan = await build_contact_plan(client, contacts, country_lookup, include_institutional)
-        print_contact_plan(plan)
+        contacts = load_flex_contacts(dump)
+        country_lookup = load_country_lookup(dump)
 
-        if not apply:
-            console.print("\n[dim]Dry-run — nic nebylo zapsáno. Spusť s --yes pro reálný import.[/dim]")
-            return
+        if do_contacts:
+            contact_plan = await build_contact_plan(
+                client, contacts, country_lookup, include_institutional
+            )
+            print_contact_plan(contact_plan)
+            if apply:
+                total_created += await apply_contact_plan(client, contact_plan, run_log)  # type: ignore[arg-type]
 
-        run_log = RunLog.start(slug)
-        created_count = await apply_contact_plan(client, plan, run_log)
-        run_log_path = run_log.save()
-        console.print(f"\n[green]Hotovo.[/green] Vytvořeno {created_count} kontaktů.")
-        console.print(f"Run log: {run_log_path} (run-id: {run_log.run_id}, pro rollback)")
+        if do_issued or do_received:
+            existing_subjects = await client.list_subjects()
+            idfirmy_to_subject_id = build_idfirmy_to_subject_id(contacts, existing_subjects)
+            currency_lookup = load_currency_lookup(dump)
+            lines_by_invoice = load_invoice_lines(dump)
+
+        if do_issued:
+            issued = load_invoices(dump, "FAV")
+            issued_plan = await build_invoice_plan(
+                client, issued, lines_by_invoice, idfirmy_to_subject_id, currency_lookup,
+                "FAV", since, until,
+            )
+            print_invoice_plan(issued_plan, "Vydané faktury")
+            if apply:
+                total_created += await apply_invoice_plan(client, issued_plan, run_log, "FAV")  # type: ignore[arg-type]
+
+        if do_received:
+            received = load_invoices(dump, "FAP")
+            received_plan = await build_invoice_plan(
+                client, received, lines_by_invoice, idfirmy_to_subject_id, currency_lookup,
+                "FAP", since, until,
+            )
+            print_invoice_plan(received_plan, "Přijaté faktury")
+            if apply:
+                total_created += await apply_invoice_plan(client, received_plan, run_log, "FAP")  # type: ignore[arg-type]
+
+    if not apply:
+        console.print("\n[dim]Dry-run — nic nebylo zapsáno. Spusť s --yes pro reálný import.[/dim]")
+        return
+
+    run_log_path = run_log.save()  # type: ignore[union-attr]
+    console.print(f"\n[green]Hotovo.[/green] Vytvořeno {total_created} záznamů.")
+    console.print(f"Run log: {run_log_path} (run-id: {run_log.run_id}, pro rollback)")  # type: ignore[union-attr]
 
 
 if __name__ == "__main__":

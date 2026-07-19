@@ -6,9 +6,10 @@ See docs/spec.md — Field Mapping for the source of these mappings.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 
-from f2f.fakturoid.models import Subject
-from f2f.flexibee.models import FlexContact
+from f2f.fakturoid.models import Invoice, InvoiceLine, Subject
+from f2f.flexibee.models import FlexContact, FlexInvoice, FlexInvoiceLine
 
 # typvztahuk values observed in real data for institutional contacts
 # (health insurance, social security, tax office) rather than actual
@@ -86,4 +87,93 @@ def plan_contacts_migration(
             seen_in_this_run.add(dedup_key)
 
         plan.to_create.append((contact, map_contact(contact, country_lookup)))
+    return plan
+
+
+def map_invoice_line(line: FlexInvoiceLine) -> InvoiceLine:
+    # nazev observed NULL in real data (e.g. old records with no line
+    # description) — Fakturoid requires a non-empty name.
+    name = line.nazev.strip() if line.nazev else "(bez názvu)"
+    return InvoiceLine(
+        name=name or "(bez názvu)",
+        quantity=line.mnozmj,
+        unit_price=line.cenamj,
+        vat_rate=line.szbdph,
+    )
+
+
+def map_invoice(
+    invoice: FlexInvoice,
+    lines: list[FlexInvoiceLine],
+    subject_id: int,
+    currency_lookup: dict[str, str],
+) -> Invoice:
+    currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
+    return Invoice(
+        number=invoice.kod,
+        subject_id=subject_id,
+        issued_on=invoice.datvyst,
+        due_on=invoice.datsplat,
+        taxable_fulfillment_due=invoice.duzppuv,
+        variable_symbol=invoice.varsym,
+        currency=currency,
+        paid_on=(invoice.datuhr or invoice.datvyst) if invoice.is_paid else None,
+        lines=[map_invoice_line(line) for line in lines],
+    )
+
+
+@dataclass
+class InvoiceMigrationPlan:
+    to_create: list[tuple[FlexInvoice, Invoice]] = field(default_factory=list)
+    to_skip_existing: list[FlexInvoice] = field(default_factory=list)
+    to_skip_storno: list[FlexInvoice] = field(default_factory=list)
+    to_skip_missing_subject: list[FlexInvoice] = field(default_factory=list)
+
+
+def plan_invoices_migration(
+    invoices: list[FlexInvoice],
+    lines_by_invoice: dict[int, list[FlexInvoiceLine]],
+    idfirmy_to_subject_id: dict[int, int],
+    currency_lookup: dict[str, str],
+    existing_numbers: set[str],
+    since: date | None = None,
+    until: date | None = None,
+) -> InvoiceMigrationPlan:
+    """Decide what to create/skip for issued or received invoices.
+
+    `since`/`until` scope the run to a date window on `datvyst` (see
+    docs/spec.md#cutover-strategie-postupný-import) — invoices outside the
+    window are silently excluded from the plan entirely, not counted as
+    "skipped", since they are simply out of scope for this run.
+
+    `idfirmy_to_subject_id` must come from a single upfront lookup (built
+    by the caller from FlexiBee contacts + a cached Fakturoid subjects
+    list), not a per-invoice API call — see docs/spec.md#idempotence.
+    """
+    plan = InvoiceMigrationPlan()
+    seen_in_this_run: set[str] = set()
+    for invoice in invoices:
+        if since is not None and invoice.datvyst < since:
+            continue
+        if until is not None and invoice.datvyst >= until:
+            continue
+
+        if invoice.storno:
+            plan.to_skip_storno.append(invoice)
+            continue
+
+        if invoice.kod in existing_numbers or invoice.kod in seen_in_this_run:
+            plan.to_skip_existing.append(invoice)
+            continue
+
+        subject_id = (
+            idfirmy_to_subject_id.get(invoice.idfirmy) if invoice.idfirmy is not None else None
+        )
+        if subject_id is None:
+            plan.to_skip_missing_subject.append(invoice)
+            continue
+
+        seen_in_this_run.add(invoice.kod)
+        lines = lines_by_invoice.get(invoice.iddoklfak, [])
+        plan.to_create.append((invoice, map_invoice(invoice, lines, subject_id, currency_lookup)))
     return plan

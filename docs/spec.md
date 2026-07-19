@@ -1,6 +1,8 @@
 # flexibee2fakturoid — Technická specifikace
 
-> Stav: Draft v0.5 — backup-first přístup, ověřeno proti reálné záloze, doplněno o Fakturoid API limity, bezpečnostní pravidla kolem odesílání emailů a postupný cutover (letošní rok → historie).
+> Stav: v0.6 — Fáze 1–4 a rollback implementované a end-to-end otestované proti mock Fakturoid serveru
+> i proti reálné záloze (dry-run/mock, nikdy produkční účet). Před prvním ostrým `--yes` během zbývá
+> ověřit Q2/Q3 proti reálnému Fakturoid API — viz Open Questions.
 > Nahrazuje artefakt v0.2, který předpokládal jiný formát zálohy (viz [Historie](#historie-verzí) níže).
 
 ## Publikum a rozsah
@@ -146,22 +148,29 @@ flexibee2fakturoid/
 ├── docs/
 │   └── spec.md               # tento dokument
 ├── src/f2f/
-│   ├── cli.py                 # typer entry point
+│   ├── cli.py                 # typer entry point — inspect, migrate, rollback
 │   ├── flexibee/
-│   │   ├── backup.py          # pgdumplib wrapper, čtení tabulek
-│   │   └── models.py          # Pydantic: FlexContact, FlexInvoice…
+│   │   ├── backup.py          # pgdumplib wrapper, čtení tabulek + lookup_table()
+│   │   └── models.py          # Pydantic: FlexContact, FlexInvoice, FlexInvoiceLine
 │   ├── fakturoid/
-│   │   ├── client.py          # httpx wrapper, rate limiting, retry
-│   │   └── models.py          # Pydantic: Subject, Invoice…
+│   │   ├── client.py          # httpx wrapper, rate limiting, retry, base-url override
+│   │   └── models.py          # Pydantic: Subject, Invoice, InvoiceLine
 │   └── migration/
-│       ├── mapper.py          # FlexiBee → Fakturoid překlad polí
-│       └── runner.py          # orchestrace, dry-run, report
+│       ├── mapper.py          # FlexiBee → Fakturoid překlad polí + dedup plánování
+│       ├── runner.py          # orchestrace, dry-run report, apply, rollback
+│       └── run_log.py         # perzistence vytvořených záznamů pro rollback
 └── tests/
     ├── fixtures/               # vzorové řádky/tabulky pro unit testy (bez reálné zálohy)
     ├── mock_fakturoid/         # stavový Flask mock Fakturoid API pro e2e testy
-    │   └── app.py
-    ├── test_mapper.py
-    └── test_e2e_migrate.py    # end-to-end testy CLI proti mock_fakturoid
+    │   ├── app.py
+    │   └── server.py           # spouští app.py na reálném lokálním socketu
+    ├── conftest.py
+    ├── test_backup.py
+    ├── test_models.py
+    ├── test_mock_fakturoid.py
+    ├── test_e2e_migrate.py     # e2e: kontakty
+    ├── test_e2e_invoices.py    # e2e: vydané/přijaté faktury, --since/--until
+    └── test_e2e_rollback.py    # e2e: rollback
 ```
 
 Backup soubor je v `.gitignore` — spravuje ho uživatel sám, nikdy se necommituje.
@@ -515,8 +524,14 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
   1500 requestů na volném tarifu (a jeho měkká politika při překročení), potvrzení že `POST` na
   vytvoření záznamu neodesílá email automaticky (tvrdé pravidlo: nikdy nevolat `send_by_email.json`),
   a detail k `number_formats.json` pro Q3 (číselné řady).
-- **v0.5** (tento dokument) — rozhodnuto o postupném cutoveru: první produkční běh omezen na faktury
+- **v0.5** — rozhodnuto o postupném cutoveru: první produkční běh omezen na faktury
   aktuálního roku (`--since`/`--until` filtr na `datvyst`), historie (1004 z 1049 faktur) se
   doimportuje postupně později. Kontakty zůstávají plný import (74 skutečných obchodních kontaktů,
   nezávisle na období faktur — z 615 řádků v `aadresar` jich 541 jsou vestavěné číselníky FlexiBee,
   vynechané by default, viz Q7).
+- **v0.6** (tento dokument) — Fáze 1–4 a rollback implementované (`f2f inspect`/`migrate`/`rollback`),
+  end-to-end otestované proti mock Fakturoid serveru i proti reálné záloze. Reálné testování odhalilo
+  a opravilo: `dpolfak.nazev` může být `NULL` (mapper má fallback), `--only`/`--since`/`--until`
+  fungují přesně dle plánu (letošní dávka: 6 vydaných + 39 přijatých, sedí s dřívějším odhadem).
+  Q2 a Q3 zůstávají neověřené proti živému Fakturoid API — implementováno podle nejlepšího odhadu,
+  nutno ověřit na sandboxu před prvním produkčním `--yes` během.

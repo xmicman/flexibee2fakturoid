@@ -12,13 +12,24 @@ stažená z FlexiBee UI.
 1. FlexiBee → **Nástroje → Záloha firmy** → uložit jako `firma.winstrom-backup`
 2. `poetry install`
 3. `poetry run f2f inspect firma.winstrom-backup` — ukáže, co záloha obsahuje
-4. `poetry run f2f migrate firma.winstrom-backup --fakturoid-slug <slug> --fakturoid-token <token>` —
+4. `poetry run f2f migrate firma.winstrom-backup --fakturoid-slug <slug> --fakturoid-token <token> --only contacts` —
    dry-run (výchozí), přidej `--yes` pro reálný import
+5. Doporučeno: první ostrý běh omezit na aktuální rok —
+   `--only issued-invoices --since 2026-01-01`, pak `--only received-invoices --since 2026-01-01`.
+   Historie se doimportuje postupně později (viz
+   [docs/spec.md#cutover-strategie-postupný-import](docs/spec.md#cutover-strategie-postupný-import)).
+6. Pokud se něco pokazí po `--yes` běhu: `f2f rollback <run-id>` vrátí zpět přesně to, co ten běh
+   vytvořil (run-id se vypíše na konci každého `--yes` běhu).
 
 ## Stav projektu
 
-Rané vývojové fáze — viz [otevřené issues](../../issues) pro aktuální plán a
-[docs/spec.md](docs/spec.md) pro plnou technickou specifikaci.
+Fáze 1–4 (backup parser, kontakty, vydané i přijaté faktury) a rollback jsou implementované a
+end-to-end otestované proti mock Fakturoid serveru i proti reálné záloze (dry-run/mock-server run,
+nikdy proti produkčnímu Fakturoid účtu). **Před prvním skutečným `--yes` během na ostrém účtu** je
+potřeba ručně ověřit pár věcí proti reálnému Fakturoid API/sandboxu — zejména podporu vlastního
+čísla faktury (Q3) a přesný endpoint pro přijaté faktury (Q2), viz
+[docs/spec.md — Open Questions](docs/spec.md#open-questions). Detailní stav viz
+[issues](../../issues) a [docs/spec.md](docs/spec.md).
 
 ## Vývoj
 

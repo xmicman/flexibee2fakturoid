@@ -68,7 +68,9 @@ async def test_issued_invoice_created_with_number_and_subject(
     assert created == 1
     assert len(mock_fakturoid.state.invoices) == 1
     stored = next(iter(mock_fakturoid.state.invoices.values()))
-    assert stored["number"] == "VF1-0009/2024"
+    # "/" gets normalized to "-" — Fakturoid number formats don't allow
+    # slashes, confirmed live (2026-07-19). See _normalize_invoice_number.
+    assert stored["number"] == "VF1-0009-2024"
     assert stored["subject_id"] == subject["id"]
     assert stored["lines"][0]["name"] == "Programování"
 

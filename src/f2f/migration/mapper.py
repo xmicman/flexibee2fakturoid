@@ -90,6 +90,15 @@ def plan_contacts_migration(
     return plan
 
 
+def _normalize_invoice_number(kod: str) -> str:
+    """Fakturoid number formats only allow digits, A-Z, and a hyphen — no
+    slash. FlexiBee numbers observed as e.g. "VF1-0009/2024" or
+    "F0083/23"; confirmed live (2026-07-19) that "/" makes number
+    validation fail against a configured number_format. "-" is the
+    closest allowed substitute. See docs/spec.md Open Question Q3."""
+    return kod.replace("/", "-")
+
+
 def map_invoice_line(line: FlexInvoiceLine) -> InvoiceLine:
     # nazev observed NULL in real data (e.g. old records with no line
     # description) — Fakturoid requires a non-empty name.
@@ -115,7 +124,7 @@ def map_issued_invoice(
     currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
     due = (invoice.datsplat - invoice.datvyst).days if invoice.datsplat else None
     return Invoice(
-        number=invoice.kod,
+        number=_normalize_invoice_number(invoice.kod),
         subject_id=subject_id,
         issued_on=invoice.datvyst,
         due=due,
@@ -137,7 +146,7 @@ def map_received_expense(
     date) as the best available approximation."""
     currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
     return Expense(
-        number=invoice.kod,
+        number=_normalize_invoice_number(invoice.kod),
         subject_id=subject_id,
         issued_on=invoice.datvyst,
         received_on=invoice.datvyst,
@@ -191,7 +200,10 @@ def plan_invoices_migration(
             plan.to_skip_storno.append(invoice)
             continue
 
-        if invoice.kod in existing_numbers or invoice.kod in seen_in_this_run:
+        # Dedup on the normalized number — existing_numbers comes from
+        # Fakturoid, which stores "-" not "/" (see _normalize_invoice_number).
+        normalized_number = _normalize_invoice_number(invoice.kod)
+        if normalized_number in existing_numbers or normalized_number in seen_in_this_run:
             plan.to_skip_existing.append(invoice)
             continue
 
@@ -202,7 +214,7 @@ def plan_invoices_migration(
             plan.to_skip_missing_subject.append(invoice)
             continue
 
-        seen_in_this_run.add(invoice.kod)
+        seen_in_this_run.add(normalized_number)
         lines = lines_by_invoice.get(invoice.iddoklfak, [])
         plan.to_create.append((invoice, map_fn(invoice, lines, subject_id, currency_lookup)))
     return plan

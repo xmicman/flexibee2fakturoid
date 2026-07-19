@@ -1,6 +1,6 @@
 # flexibee2fakturoid — Technická specifikace
 
-> Stav: Draft v0.4 — backup-first přístup, ověřeno proti reálné záloze, doplněno o Fakturoid API limity a bezpečnostní pravidla kolem odesílání emailů.
+> Stav: Draft v0.5 — backup-first přístup, ověřeno proti reálné záloze, doplněno o Fakturoid API limity, bezpečnostní pravidla kolem odesílání emailů a postupný cutover (letošní rok → historie).
 > Nahrazuje artefakt v0.2, který předpokládal jiný formát zálohy (viz [Historie](#historie-verzí) níže).
 
 ## Publikum a rozsah
@@ -285,6 +285,45 @@ retry logika výše řeší jen ten první. Vyčerpání měsíční kvóty se n
 requestem znovu za pár vteřin; runner by měl takový stav rozpoznat (chybová odpověď API při
 vyčerpané kvótě) a migraci čitelně zastavit s reportem "hotovo X z Y", ne slepě zkoušet dál donekonečna.
 
+<a id="cutover-strategie-postupný-import"></a>
+## Cutover strategie: postupný import
+
+Rozhodnuto: první produkční běh se **omezí na faktury z aktuálního roku**, historie se doimportuje
+postupně později. Reálná čísla ze zálohy (2026-07-19):
+
+| Rok | Vydané (FAV) | Přijaté (FAP) | Celkem |
+|---|---|---|---|
+| **2026 (první běh)** | 6 | 39 | **45** |
+| 2011–2025 (backfill) | 317 | 687 | 1004 |
+
+Letošní dávka odkazuje jen na **9 unikátních kontaktů** (z 615 celkem).
+
+### Proč
+
+- Dramaticky menší blast radius prvního ostrého běhu — 45 záznamů, ne 1049.
+- API rozpočet přestává být problém pro cutover samotný (45 faktur ≪ 1500/měsíc). Historický
+  backfill zůstává tam, kde ho dokumentuje [API limity a rozpočet requestů](#api-limity-a-rozpočet-requestů) —
+  řeší se až později, klidně rozložený přes víc měsíců.
+- Menší dávka = rychlejší a levnější první ověření, že mapper/číslování/stav úhrady fungují správně
+  na reálném účtu, než se pustí do zbytku historie.
+- Idempotentní dedup (viz [Idempotence](#idempotence)) dělá z opakovaných/rozšiřovaných běhů bezpečnou
+  operaci — pozdější běh s dřívějším `--since` naimportuje jen to, co ještě neexistuje, nic
+  nezdupluje.
+
+### Rozsah filtru
+
+**Kontakty se importují vždy celé** (615 záznamů, nezávisle na období faktur) — nízkoriziková
+adresářová data, chceš mít kompletní seznam pro fakturaci komukoliv od začátku. Jen **faktury**
+(vydané i přijaté) se filtrují podle `datvyst` přes `--since`/`--until` (viz CLI Interface níže).
+
+### Doporučený postup backfillu
+
+1. `--since <letos-01-01>` — cutover, ověření na malé dávce
+2. Po ověření: postupně `--since 2025-01-01 --until 2026-01-01`, pak `2024`, atd. — nebo rovnou
+   `--since 2011-01-01` na celou historii najednou, pokud po cutoveru není důvod dávkovat dál
+3. Každý běh nezávisle podléhá stejnému `--dry-run` → `--yes` postupu a run logu/rollbacku
+   (viz [Rollback & Failure Recovery](#rollback--failure-recovery))
+
 ## CLI Interface
 
 ```bash
@@ -306,6 +345,11 @@ f2f inspect firma.winstrom-backup
 f2f migrate firma.winstrom-backup … --only contacts
 f2f migrate firma.winstrom-backup … --only issued-invoices
 f2f migrate firma.winstrom-backup … --only received-invoices
+
+# Faktury omezené na časové okno (datvyst) — cutover na aktuální rok, historie později
+# --since/--until se týká jen faktur, kontakty se importují vždy celé
+f2f migrate firma.winstrom-backup … --since 2026-01-01
+f2f migrate firma.winstrom-backup … --since 2025-01-01 --until 2026-01-01   # postupný backfill po letech
 
 # Přepsání base URL Fakturoid API — použito testy (mock server), jinak vždy produkční API
 f2f migrate firma.winstrom-backup … --fakturoid-base-url http://127.0.0.1:8000
@@ -437,8 +481,8 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
 |---|---|---|
 | 1 | Backup parser + inspect | `pyproject.toml`, CLI skeleton, `pgdumplib` wrapper nad klíčovými tabulkami. Výstup: `f2f inspect firma.winstrom-backup` zobrazí počty entit a vzorový záznam každého typu. |
 | 2 | Kontakty → Fakturoid | Pydantic modely, mapper, httpx klient, import s deduplikací přes IČO. Dry-run výstup v tabulce. |
-| 3 | Vydané faktury | Parser `ddoklfak`/`dpolfak` (modul=FAV), mapper, lookup kontaktů, import. Zachování číslování, stav úhrady, měna, validace součtů. |
-| 4 | Přijaté faktury | Totéž pro modul=FAP, import přes `inbox_invoices` (ověřit endpoint). |
+| 3 | Vydané faktury | Parser `ddoklfak`/`dpolfak` (modul=FAV), mapper, lookup kontaktů, `--since`/`--until` filtr, import. Zachování číslování, stav úhrady, měna, validace součtů. První ostrý běh omezen na aktuální rok (viz [Cutover strategie](#cutover-strategie-postupný-import)), historie doimportována postupně později. |
+| 4 | Přijaté faktury | Totéž pro modul=FAP, import přes `inbox_invoices` (ověřit endpoint). Stejný `--since`/`--until` cutover přístup jako Fáze 3. |
 | 5 | Polish + wrap-up | Edge cases (různé DPH sazby, kontakty bez IČO, storno doklady, zálohové faktury), unit testy, README. Měna a stav úhrady jsou core mapping od Fáze 3, ne edge case zde. Kód zůstává veřejný na GitHubu jako inspirace, ne jako udržovaný OSS projekt — bez ambice podporovat cizí FlexiBee instalace (viz [Publikum a rozsah](#publikum-a-rozsah)). |
 
 ## Open Questions
@@ -463,7 +507,10 @@ Fakturoidu ještě nikdo nezačal reálně pracovat.
   dump, čtený přes `pgdumplib`. Tech stack a field mapping aktualizovány na reálné názvy tabulek/sloupců.
   Přidána Testing Strategy (mock Fakturoid API), Rollback & Failure Recovery a přerámování na osobní
   nástroj (kód veřejný jako inspirace, ne udržovaný OSS projekt).
-- **v0.4** (tento dokument) — doplněno o reálná zjištění z Fakturoid účtu autora: měsíční API limit
+- **v0.4** — doplněno o reálná zjištění z Fakturoid účtu autora: měsíční API limit
   1500 requestů na volném tarifu (a jeho měkká politika při překročení), potvrzení že `POST` na
   vytvoření záznamu neodesílá email automaticky (tvrdé pravidlo: nikdy nevolat `send_by_email.json`),
   a detail k `number_formats.json` pro Q3 (číselné řady).
+- **v0.5** (tento dokument) — rozhodnuto o postupném cutoveru: první produkční běh omezen na faktury
+  aktuálního roku (`--since`/`--until` filtr na `datvyst`), historie (1004 z 1049 faktur) se
+  doimportuje postupně později. Kontakty zůstávají plný import (615, nezávisle na období faktur).

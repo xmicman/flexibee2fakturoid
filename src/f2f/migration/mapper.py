@@ -148,16 +148,20 @@ def map_received_expense(
 ) -> Expense:
     """FAP -> POST /expenses.json payload. `received_on` has no distinct
     source field in FlexiBee's ddoklfak — defaults to `datvyst` (issue
-    date) as the best available approximation."""
+    date) as the best available approximation.
+
+    No `number` — see Expense model docstring for why. Original FlexiBee
+    number goes in `custom_id` (raw, not normalized — no format
+    constraint applies to a free-text field)."""
     currency = currency_lookup.get(str(invoice.idmeny)) if invoice.idmeny is not None else None
     return Expense(
-        number=_normalize_invoice_number(invoice.kod),
         subject_id=subject_id,
         issued_on=invoice.datvyst,
         received_on=invoice.datvyst,
         due_on=invoice.datsplat,
         variable_symbol=invoice.varsym,
         currency=currency,
+        custom_id=invoice.kod,
         lines=[map_invoice_line(line) for line in lines],
     )
 
@@ -175,7 +179,7 @@ def plan_invoices_migration(
     lines_by_invoice: dict[int, list[FlexInvoiceLine]],
     idfirmy_to_subject_id: dict[int, int],
     currency_lookup: dict[str, str],
-    existing_numbers: set[str],
+    existing_dedup_keys: set[str],
     modul: str,
     since: date | None = None,
     until: date | None = None,
@@ -212,10 +216,11 @@ def plan_invoices_migration(
             plan.to_skip_storno.append(invoice)
             continue
 
-        # Dedup on the normalized number — existing_numbers comes from
-        # Fakturoid, which stores "-" not "/" (see _normalize_invoice_number).
-        normalized_number = _normalize_invoice_number(invoice.kod)
-        if normalized_number in existing_numbers or normalized_number in seen_in_this_run:
+        # FAV dedups on the normalized `number` (Fakturoid stores "-" not
+        # "/"). FAP has no controllable `number` (see Expense model
+        # docstring) — dedups on `custom_id` (raw, unnormalized) instead.
+        dedup_key = _normalize_invoice_number(invoice.kod) if modul == "FAV" else invoice.kod
+        if dedup_key in existing_dedup_keys or dedup_key in seen_in_this_run:
             plan.to_skip_existing.append(invoice)
             continue
 
@@ -226,7 +231,7 @@ def plan_invoices_migration(
             plan.to_skip_missing_subject.append(invoice)
             continue
 
-        seen_in_this_run.add(normalized_number)
+        seen_in_this_run.add(dedup_key)
         lines = lines_by_invoice.get(invoice.iddoklfak, [])
         if modul == "FAV":
             mapped = map_issued_invoice(invoice, lines, subject_id, currency_lookup, number_format_id)

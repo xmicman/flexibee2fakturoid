@@ -68,19 +68,30 @@ class Expense(BaseModel):
     """Payload shape for POST /accounts/{slug}/expenses.json (received invoices).
 
     Verified against https://www.fakturoid.cz/api/v3/expenses (2026-07-19).
-    Unlike Invoice, `due_on` here IS an absolute date, and the docs don't
-    mention a number_format constraint on `number` for expenses. Payment
-    status is likewise a separate `POST .../expenses/{id}/payments.json`
-    call, not a field here.
+    Unlike Invoice, `due_on` here IS an absolute date. Payment status is
+    likewise a separate `POST .../expenses/{id}/payments.json` call, not
+    a field here.
+
+    Unlike Invoice, `number` is deliberately NOT set here. Confirmed live
+    (2026-07-19): expenses reject a custom `number` the same way invoices
+    do ("Číslo neodpovídá formátu čísla v nastavení"), but — unlike
+    invoices — there is no configurable number_format for expenses (no
+    such option in Fakturoid's "Náklady" UI, no number_format_id in the
+    docs). Fakturoid auto-generates its own number; the original
+    FlexiBee number goes in `custom_id` instead, which dedup keys off of
+    (see mapper.plan_invoices_migration) since the auto-generated number
+    can never match anything from the source data. This is a deliberate
+    decision, not a workaround someone should "fix" later — see
+    docs/spec.md Open Question Q3.
     """
 
-    number: str
     subject_id: int
     issued_on: date
     received_on: date | None = None
     due_on: date | None = None
     variable_symbol: str | None = None
     currency: str | None = None
+    custom_id: str | None = None
     lines: list[InvoiceLine] = []
 
 

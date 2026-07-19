@@ -145,13 +145,14 @@ async def build_invoice_plan(
     number_format_id: int | None = None,
 ) -> InvoiceMigrationPlan:
     existing = await client.list_invoices() if modul == "FAV" else await client.list_expenses()
-    existing_numbers = {inv["number"] for inv in existing if inv.get("number")}
+    dedup_field = "number" if modul == "FAV" else "custom_id"
+    existing_dedup_keys = {inv[dedup_field] for inv in existing if inv.get(dedup_field)}
     return plan_invoices_migration(
         invoices,
         lines_by_invoice,
         idfirmy_to_subject_id,
         currency_lookup,
-        existing_numbers,
+        existing_dedup_keys,
         modul,
         since,
         until,

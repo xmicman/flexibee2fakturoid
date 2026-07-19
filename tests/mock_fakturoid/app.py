@@ -42,17 +42,26 @@ def _paginated(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items[start : start + PER_PAGE]
 
 
-def create_app(token: str = "test-token", rate_limit_every: int | None = None) -> Flask:
+def create_app(
+    token: str = "test-token",
+    rate_limit_every: int | None = None,
+    oauth_client_id: str = "test-client-id",
+    oauth_client_secret: str = "test-client-secret",
+) -> Flask:
     app = Flask(__name__)
     state = MockState()
     state.rate_limit_every = rate_limit_every
+    # Token issued via OAuth2 client_credentials exchange — distinct from
+    # the static PAT so tests can tell which auth path was actually used.
+    oauth_access_token = f"oauth-{token}"
     app.state = state  # type: ignore[attr-defined]
 
     @app.before_request
     def _check_auth_and_rate_limit() -> tuple[Any, int] | None:
-        if request.path == "/health":
+        if request.path in ("/health", "/oauth/token"):
             return None
-        if request.headers.get("Authorization") != f"Bearer {token}":
+        valid_tokens = (f"Bearer {token}", f"Bearer {oauth_access_token}")
+        if request.headers.get("Authorization") not in valid_tokens:
             return jsonify({"error": "invalid or missing token"}), 401
         state.request_count += 1
         if state.rate_limit_every and state.request_count % state.rate_limit_every == 0:
@@ -62,6 +71,19 @@ def create_app(token: str = "test-token", rate_limit_every: int | None = None) -
     @app.get("/health")
     def health() -> Any:
         return jsonify({"ok": True})
+
+    @app.post("/oauth/token")
+    def oauth_token() -> Any:
+        # Verified against a live account (2026-07-19): client_id/secret
+        # via HTTP Basic auth, grant_type as form-urlencoded body — the
+        # real endpoint returns 415 for a JSON body despite docs implying
+        # both are accepted.
+        auth = request.authorization
+        if not auth or auth.username != oauth_client_id or auth.password != oauth_client_secret:
+            return jsonify({"error": "invalid_client"}), 401
+        if request.form.get("grant_type") != "client_credentials":
+            return jsonify({"error": "unsupported_grant_type"}), 400
+        return jsonify({"access_token": oauth_access_token, "token_type": "Bearer", "expires_in": 7200})
 
     @app.get("/accounts/<slug>/number_formats.json")
     def number_formats(slug: str) -> Any:

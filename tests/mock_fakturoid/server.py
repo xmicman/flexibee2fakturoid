@@ -15,9 +15,22 @@ from .app import MockState, create_app
 
 
 class MockFakturoidServer:
-    def __init__(self, token: str = "test-token", rate_limit_every: int | None = None) -> None:
+    def __init__(
+        self,
+        token: str = "test-token",
+        rate_limit_every: int | None = None,
+        oauth_client_id: str = "test-client-id",
+        oauth_client_secret: str = "test-client-secret",
+    ) -> None:
         self.token = token
-        self.app = create_app(token=token, rate_limit_every=rate_limit_every)
+        self.oauth_client_id = oauth_client_id
+        self.oauth_client_secret = oauth_client_secret
+        self.app = create_app(
+            token=token,
+            rate_limit_every=rate_limit_every,
+            oauth_client_id=oauth_client_id,
+            oauth_client_secret=oauth_client_secret,
+        )
         self._server = make_server("127.0.0.1", 0, self.app)
         self.port = self._server.server_port
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -37,9 +50,17 @@ class MockFakturoidServer:
 
 @contextmanager
 def running_mock_server(
-    token: str = "test-token", rate_limit_every: int | None = None
+    token: str = "test-token",
+    rate_limit_every: int | None = None,
+    oauth_client_id: str = "test-client-id",
+    oauth_client_secret: str = "test-client-secret",
 ) -> Iterator[MockFakturoidServer]:
-    server = MockFakturoidServer(token=token, rate_limit_every=rate_limit_every)
+    server = MockFakturoidServer(
+        token=token,
+        rate_limit_every=rate_limit_every,
+        oauth_client_id=oauth_client_id,
+        oauth_client_secret=oauth_client_secret,
+    )
     server.start()
     try:
         yield server

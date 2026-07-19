@@ -74,13 +74,28 @@ def inspect(
         console.print(received[0].model_dump())
 
 
-def _resolve_token(fakturoid_token: str | None) -> str:
-    if fakturoid_token:
-        return fakturoid_token
+def _resolve_fakturoid_auth(
+    token: str | None, client_id: str | None, client_secret: str | None
+) -> dict[str, str]:
+    """Priority: explicit CLI flags > env vars > interactive PAT prompt.
+    Returns kwargs for FakturoidClient(**kwargs). OAuth2 Client Credentials
+    (client_id/client_secret) is Fakturoid's recommended auth for a script
+    like this one — see FakturoidClient docstring."""
+    if token:
+        return {"token": token}
+    if client_id and client_secret:
+        return {"client_id": client_id, "client_secret": client_secret}
+
     env_token = os.environ.get("FAKTUROID_TOKEN")
     if env_token:
-        return env_token
-    return typer.prompt("Fakturoid token", hide_input=True)
+        return {"token": env_token}
+
+    env_client_id = os.environ.get("FAKTUROID_CLIENT_ID")
+    env_client_secret = os.environ.get("FAKTUROID_SECRET")
+    if env_client_id and env_client_secret:
+        return {"client_id": env_client_id, "client_secret": env_client_secret}
+
+    return {"token": typer.prompt("Fakturoid token", hide_input=True)}
 
 
 def _parse_date(value: str | None, option_name: str) -> date | None:
@@ -101,7 +116,14 @@ def migrate(
     fakturoid_slug: Annotated[str, typer.Option("--fakturoid-slug", help="Slug Fakturoid účtu")],
     fakturoid_token: Annotated[
         str | None,
-        typer.Option("--fakturoid-token", help="PAT token. Bez zadání: FAKTUROID_TOKEN env, jinak interaktivní prompt."),
+        typer.Option("--fakturoid-token", help="PAT token. Alternativa k --fakturoid-client-id/--fakturoid-client-secret."),
+    ] = None,
+    fakturoid_client_id: Annotated[
+        str | None,
+        typer.Option("--fakturoid-client-id", help="OAuth2 Client Credentials — spolu s --fakturoid-client-secret."),
+    ] = None,
+    fakturoid_client_secret: Annotated[
+        str | None, typer.Option("--fakturoid-client-secret", help="Viz --fakturoid-client-id.")
     ] = None,
     fakturoid_base_url: Annotated[
         str,
@@ -141,14 +163,14 @@ def migrate(
 
     since_date = _parse_date(since, "--since")
     until_date = _parse_date(until, "--until")
-    token = _resolve_token(fakturoid_token)
+    auth = _resolve_fakturoid_auth(fakturoid_token, fakturoid_client_id, fakturoid_client_secret)
     dump = backup.load(backup_path)
 
     asyncio.run(
         _migrate_async(
             dump=dump,
             slug=fakturoid_slug,
-            token=token,
+            auth=auth,
             base_url=fakturoid_base_url,
             only=only,
             since=since_date,
@@ -162,7 +184,7 @@ def migrate(
 async def _migrate_async(
     dump: Dump,
     slug: str,
-    token: str,
+    auth: dict[str, str],
     base_url: str,
     only: str | None,
     since: date | None,
@@ -177,7 +199,7 @@ async def _migrate_async(
     run_log = RunLog.start(slug) if apply else None
     total_created = 0
 
-    async with FakturoidClient(slug=slug, token=token, base_url=base_url) as client:
+    async with FakturoidClient(slug=slug, base_url=base_url, **auth) as client:
         contacts = load_flex_contacts(dump)
         country_lookup = load_country_lookup(dump)
 
@@ -230,7 +252,13 @@ def rollback(
     fakturoid_slug: Annotated[str, typer.Option("--fakturoid-slug", help="Slug Fakturoid účtu")],
     fakturoid_token: Annotated[
         str | None,
-        typer.Option("--fakturoid-token", help="PAT token. Bez zadání: FAKTUROID_TOKEN env, jinak interaktivní prompt."),
+        typer.Option("--fakturoid-token", help="PAT token. Alternativa k --fakturoid-client-id/--fakturoid-client-secret."),
+    ] = None,
+    fakturoid_client_id: Annotated[
+        str | None, typer.Option("--fakturoid-client-id", help="OAuth2 Client Credentials.")
+    ] = None,
+    fakturoid_client_secret: Annotated[
+        str | None, typer.Option("--fakturoid-client-secret", help="Viz --fakturoid-client-id.")
     ] = None,
     fakturoid_base_url: Annotated[
         str,
@@ -263,12 +291,12 @@ def rollback(
         console.print("\n[dim]Dry-run — nic nebylo smazáno. Spusť s --yes pro skutečné smazání.[/dim]")
         return
 
-    token = _resolve_token(fakturoid_token)
-    asyncio.run(_rollback_async(run_log, fakturoid_slug, token, fakturoid_base_url))
+    auth = _resolve_fakturoid_auth(fakturoid_token, fakturoid_client_id, fakturoid_client_secret)
+    asyncio.run(_rollback_async(run_log, fakturoid_slug, auth, fakturoid_base_url))
 
 
-async def _rollback_async(run_log: RunLog, slug: str, token: str, base_url: str) -> None:
-    async with FakturoidClient(slug=slug, token=token, base_url=base_url) as client:
+async def _rollback_async(run_log: RunLog, slug: str, auth: dict[str, str], base_url: str) -> None:
+    async with FakturoidClient(slug=slug, base_url=base_url, **auth) as client:
         deleted, failures = await apply_rollback(client, run_log)
 
     console.print(f"\n[green]Smazáno {deleted} z {len(run_log.created)} záznamů.[/green]")
